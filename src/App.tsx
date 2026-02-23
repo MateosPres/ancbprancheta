@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Stage, Layer, Image as KonvaImage, Group, Circle, Text, Rect, Line } from 'react-konva';
-import { UserPlus, X, Trash2, Pencil, MousePointer2, Undo, Eraser, Save, FolderOpen, Plus } from 'lucide-react';
+import { UserPlus, X, Trash2, Undo, Eraser, Save, FolderOpen, Plus } from 'lucide-react';
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from './services/firebase';
 
@@ -17,7 +17,7 @@ interface Player {
 
 interface Token {
   id: string;
-  type: 'ancb' | 'rival';
+  type: 'ancb' | 'rival' | 'generic';
   x: number;
   y: number;
   nome?: string;
@@ -58,7 +58,7 @@ const ASSETS_URLS = {
 };
 
 // 3 cores: vermelho saturado, preto, branco
-const PEN_COLORS = ['#ff0000', '#000000', '#ffffff'];
+const PEN_COLORS = ['#ff0000', '#000000', '#ffffff', '#ffff00'];
 
 // ============================================================================
 // COMPONENTE TOKEN
@@ -69,15 +69,14 @@ interface PlayerTokenProps {
   onDragEnd: (id: string, x: number, y: number) => void;
   onSelect: (id: string) => void;
   isSelected: boolean;
-  isLocked: boolean;
 }
 
-const PlayerToken: React.FC<PlayerTokenProps> = ({ token, onDragEnd, onSelect, isSelected, isLocked }) => {
+const PlayerToken: React.FC<PlayerTokenProps> = ({ token, onDragEnd, onSelect, isSelected }) => {
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
 
   useEffect(() => {
-    if (token.type === 'rival') {
+    if (token.type === 'rival' || token.type === 'generic') {
         setStatus('error');
         return;
     }
@@ -102,18 +101,29 @@ const PlayerToken: React.FC<PlayerTokenProps> = ({ token, onDragEnd, onSelect, i
         }
     };
     img.onerror = () => setStatus('error');
-  }, [token.foto, token.nome]);
+  }, [token.foto, token.nome, token.type]);
 
   const radius = 22;
   const diameter = radius * 2;
   const isOpponent = token.type === 'rival';
-  const mainColor = isOpponent ? '#ef4444' : '#062553';
-  const strokeColor = isOpponent ? '#991b1b' : '#041b3d';
-  const showText = isOpponent || status !== 'loaded';
+  const isGeneric = token.type === 'generic';
+  
+  let mainColor = '#062553'; // ancb default
+  let strokeColor = '#041b3d';
+  
+  if (isOpponent) {
+    mainColor = '#ef4444';
+    strokeColor = '#991b1b';
+  } else if (isGeneric) {
+    mainColor = '#1e3a5f';
+    strokeColor = '#0f1f33';
+  }
+  
+  const showText = isOpponent || isGeneric || status !== 'loaded';
 
   return (
     <Group
-      draggable={!isLocked}
+      draggable={true}
       x={token.x}
       y={token.y}
       onDragEnd={(e) => onDragEnd(token.id, e.target.x(), e.target.y())}
@@ -127,9 +137,13 @@ const PlayerToken: React.FC<PlayerTokenProps> = ({ token, onDragEnd, onSelect, i
       )}
       <Circle radius={radius} stroke={isSelected ? '#F27405' : strokeColor} strokeWidth={isSelected ? 4 : 2} fillEnabled={false} />
       {showText && (
-        <Text text={isOpponent ? token.numero?.toString() : token.nome?.charAt(0).toUpperCase()} fontSize={20} fontStyle="bold" fill="white" align="center" verticalAlign="middle" offsetX={6} offsetY={8} listening={false} />
+        <Text 
+          text={isOpponent || isGeneric ? token.numero?.toString() : token.nome?.charAt(0).toUpperCase()} 
+          fontSize={20} fontStyle="bold" fill="white" align="center" verticalAlign="middle" 
+          offsetX={6} offsetY={8} listening={false} 
+        />
       )}
-      {!isOpponent && token.nome && (
+      {token.type === 'ancb' && token.nome && (
         <Text text={token.nome.split(' ')[0]} y={radius + 6} fontSize={11} fill="white" align="center" width={100} offsetX={50} shadowColor="black" shadowBlur={3} listening={false} />
       )}
     </Group>
@@ -143,6 +157,7 @@ const PlayerToken: React.FC<PlayerTokenProps> = ({ token, onDragEnd, onSelect, i
 const App = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const penButtonRef = useRef<HTMLButtonElement>(null);
+  const stageRef = useRef<any>(null);
 
   // Layout e Assets
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
@@ -163,11 +178,14 @@ const App = () => {
   const [lines, setLines] = useState<DrawnLine[]>([]);
 
   // Ferramentas
-  const [tool, setTool] = useState<'cursor' | 'pen'>('cursor');
   const [lineColor, setLineColor] = useState('#ff0000');
   const [isDrawing, setIsDrawing] = useState(false);
   const [showColorPicker, setShowColorPicker] = useState(false);
   const [colorPickerPos, setColorPickerPos] = useState({ top: 0, right: 0 });
+  
+  // Smart tool state - detects if user is drawing or moving
+  const touchStartRef = useRef<{ x: number; y: number; time: number; tokenId: string | null } | null>(null);
+  const isActuallyDrawingRef = useRef(false);
 
   // Salvar/Carregar
   const [showSaveModal, setShowSaveModal] = useState(false);
@@ -196,7 +214,7 @@ const App = () => {
         const imgLogo = new window.Image();
         imgLogo.crossOrigin = 'Anonymous';
         imgLogo.src = ASSETS_URLS.logo;
-        Promise.all([new Promise(r => imgLines.onload = r), new Promise(r => imgLogo.onload = r)]).then(() => {
+        Promise.all([new Promise(r => { imgLines.onload = r; imgLines.onerror = r; }), new Promise(r => { imgLogo.onload = r; imgLogo.onerror = r; })]).then(() => {
           setAssets({ lines: imgLines, logo: imgLogo });
         });
     };
@@ -207,24 +225,29 @@ const App = () => {
   useEffect(() => {
     const updateSize = () => {
       if (containerRef.current) {
-        const sidebarWidth = 85;
-        setDimensions({
-            width: containerRef.current.offsetWidth - sidebarWidth,
-            height: containerRef.current.offsetHeight
-        });
-
-        if (tokens.length === 0 && frames[0].tokens.length === 0) {
-            const rivals: Token[] = [1, 2, 3, 4, 5].map(num => ({
-                id: `rival-${num}`, type: 'rival', numero: num, x: 40, y: 100 + (num * 60)
-            }));
-            updateCurrentFrame(rivals, []);
-        }
+        const sidebarWidth = 72;
+        const w = containerRef.current.offsetWidth - sidebarWidth;
+        const h = containerRef.current.offsetHeight;
+        setDimensions({ width: w, height: h });
       }
     };
     updateSize();
     window.addEventListener('resize', updateSize);
     return () => window.removeEventListener('resize', updateSize);
   }, []);
+
+  // Initialize default tokens when dimensions are ready
+  useEffect(() => {
+    if (dimensions.width > 0 && dimensions.height > 0 && tokens.length === 0 && frames[0].tokens.length === 0) {
+      const rivals: Token[] = [1, 2, 3, 4, 5].map(num => ({
+        id: `rival-${num}`, type: 'rival' as const, numero: num, x: 36, y: 100 + (num * 58)
+      }));
+      const generics: Token[] = [1, 2, 3, 4, 5].map(num => ({
+        id: `generic-${num}`, type: 'generic' as const, numero: num, x: 36, y: 400 + (num * 58)
+      }));
+      updateCurrentFrame([...rivals, ...generics], []);
+    }
+  }, [dimensions]);
 
   // Fecha o color picker ao clicar fora
   useEffect(() => {
@@ -258,10 +281,7 @@ const App = () => {
 
   const addNewFrame = () => {
     const currentTokens = JSON.parse(JSON.stringify(tokens));
-    const newFrame: Frame = {
-        tokens: currentTokens,
-        lines: []
-    };
+    const newFrame: Frame = { tokens: currentTokens, lines: [] };
     const newFrames = [...frames, newFrame];
     setFrames(newFrames);
     setCurrentFrameIndex(newFrames.length - 1);
@@ -282,15 +302,38 @@ const App = () => {
       }
   };
 
-  // --- MANIPULAÇÃO DE TOKENS & DESENHO ---
+  // --- MANIPULAÇÃO DE TOKENS ---
 
   const addPlayerToCourt = (player: Player) => {
+    // Count existing ANCB tokens to position side by side at top center
+    const ancbTokens = tokens.filter(t => t.type === 'ancb');
+    const tokenWidth = 60; // spacing between tokens
+    const startX = dimensions.width / 2 - (ancbTokens.length * tokenWidth) / 2 + 30;
+    const xPos = dimensions.width / 2 - ((ancbTokens.length) * tokenWidth) / 2 + ancbTokens.length * tokenWidth - (ancbTokens.length > 0 ? ((ancbTokens.length - 1) * tokenWidth) / 2 : 0);
+    
+    // Simpler: place at top row, evenly spaced
+    const totalCount = ancbTokens.length + 1;
+    const spacing = tokenWidth;
+    const rowWidth = (totalCount - 1) * spacing;
+    const newX = (dimensions.width / 2) - (rowWidth / 2) + ancbTokens.length * spacing;
+    const newY = 60;
+
     const newToken: Token = {
       id: `${player.id}-${Date.now()}`, type: 'ancb', nome: player.nome, foto: player.foto,
-      x: dimensions.width / 2 + (Math.random() * 40 - 20),
-      y: dimensions.height / 2 + (Math.random() * 40 - 20)
+      x: newX,
+      y: newY
     };
-    updateCurrentFrame([...tokens, newToken], lines);
+
+    // Reposition all existing ANCB tokens to be centered
+    const updatedTokens = tokens.map(t => {
+      if (t.type !== 'ancb') return t;
+      const idx = ancbTokens.findIndex(at => at.id === t.id);
+      const newRowWidth = (totalCount - 1) * spacing;
+      return { ...t, x: (dimensions.width / 2) - (newRowWidth / 2) + idx * spacing, y: 60 };
+    });
+
+    updateCurrentFrame([...updatedTokens, newToken], lines);
+    setShowMenu(false);
   };
 
   const handleDragEnd = (id: string, x: number, y: number) => {
@@ -302,7 +345,10 @@ const App = () => {
     if (!selectedTokenId) return;
     if (selectedTokenId.startsWith('rival-')) {
         const num = parseInt(selectedTokenId.split('-')[1]);
-        handleDragEnd(selectedTokenId, 40, 100 + (num * 60));
+        handleDragEnd(selectedTokenId, 36, 100 + (num * 58));
+    } else if (selectedTokenId.startsWith('generic-')) {
+        const num = parseInt(selectedTokenId.split('-')[1]);
+        handleDragEnd(selectedTokenId, 36, 400 + (num * 58));
     } else {
         const newTokens = tokens.filter(t => t.id !== selectedTokenId);
         updateCurrentFrame(newTokens, lines);
@@ -310,33 +356,85 @@ const App = () => {
     setSelectedTokenId(null);
   };
 
-  const handleMouseDown = (e: any) => {
-    const isPenInput = e.evt.pointerType === 'pen';
-    if (tool === 'pen' || isPenInput) {
-        setIsDrawing(true);
-        const pos = e.target.getStage().getPointerPosition();
-        const newLine = { tool: 'pen', color: lineColor, points: [pos.x, pos.y] };
-        setLines([...lines, newLine]);
+  // ============================================================================
+  // FERRAMENTA MULTIUSO SMART
+  // ============================================================================
+
+  const getTokenAtPosition = (x: number, y: number): string | null => {
+    const hitRadius = 30;
+    for (const token of tokens) {
+      const dx = token.x - x;
+      const dy = token.y - y;
+      if (Math.sqrt(dx * dx + dy * dy) <= hitRadius) {
+        return token.id;
+      }
     }
+    return null;
   };
 
-  const handleMouseMove = (e: any) => {
-    if (!isDrawing) return;
+  const handlePointerDown = (e: any) => {
     const stage = e.target.getStage();
-    const point = stage.getPointerPosition();
-    const lastLine = lines[lines.length - 1];
-    if (lastLine) {
-        lastLine.points = lastLine.points.concat([point.x, point.y]);
-        lines.splice(lines.length - 1, 1, lastLine);
-        setLines(lines.concat());
+    const pos = stage.getPointerPosition();
+    if (!pos) return;
+
+    const tokenAtPos = getTokenAtPosition(pos.x, pos.y);
+    
+    touchStartRef.current = { 
+      x: pos.x, 
+      y: pos.y, 
+      time: Date.now(),
+      tokenId: tokenAtPos
+    };
+    isActuallyDrawingRef.current = false;
+
+    // If no token at position, start drawing immediately
+    if (!tokenAtPos) {
+      isActuallyDrawingRef.current = true;
+      setIsDrawing(true);
+      const newLine = { tool: 'pen', color: lineColor, points: [pos.x, pos.y] };
+      setLines(prev => [...prev, newLine]);
     }
   };
 
-  const handleMouseUp = () => {
-    if (isDrawing) {
-        setIsDrawing(false);
-        updateCurrentFrame(tokens, lines);
+  const handlePointerMove = (e: any) => {
+    if (!touchStartRef.current) return;
+    
+    const stage = e.target.getStage();
+    const pos = stage.getPointerPosition();
+    if (!pos) return;
+
+    const dx = pos.x - touchStartRef.current.x;
+    const dy = pos.y - touchStartRef.current.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    // If we have a token and moved enough, it's being dragged (handled by konva draggable)
+    // If no token and we're drawing, continue line
+    if (isActuallyDrawingRef.current && isDrawing) {
+      setLines(prev => {
+        const newLines = [...prev];
+        const lastLine = newLines[newLines.length - 1];
+        if (lastLine) {
+          lastLine.points = lastLine.points.concat([pos.x, pos.y]);
+          newLines[newLines.length - 1] = { ...lastLine };
+        }
+        return newLines;
+      });
     }
+  };
+
+  const handlePointerUp = () => {
+    if (isActuallyDrawingRef.current) {
+      setIsDrawing(false);
+      setTokens(prev => {
+        setLines(prevLines => {
+          updateCurrentFrame(prev, prevLines);
+          return prevLines;
+        });
+        return prev;
+      });
+    }
+    touchStartRef.current = null;
+    isActuallyDrawingRef.current = false;
   };
 
   const undoLastLine = () => {
@@ -348,36 +446,17 @@ const App = () => {
       updateCurrentFrame(tokens, []);
   };
 
-  // Abre o color picker posicionado fixo na tela, à esquerda do botão
-  const handlePenButtonClick = () => {
-    const newTool = tool === 'pen' ? 'pen' : 'pen';
-    setTool(newTool);
-
-    if (tool !== 'pen') {
-      // Ativando a caneta: mostra color picker
-      if (penButtonRef.current) {
-        const rect = penButtonRef.current.getBoundingClientRect();
-        setColorPickerPos({
-          top: rect.top,
-          right: window.innerWidth - rect.left + 8,
-        });
-      }
-      setShowColorPicker(true);
-    } else {
-      // Já estava na caneta: toggle color picker
-      if (showColorPicker) {
-        setShowColorPicker(false);
-      } else {
-        if (penButtonRef.current) {
-          const rect = penButtonRef.current.getBoundingClientRect();
-          setColorPickerPos({
-            top: rect.top,
-            right: window.innerWidth - rect.left + 8,
-          });
-        }
-        setShowColorPicker(true);
-      }
+  // Color picker
+  const handleColorButtonClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (penButtonRef.current) {
+      const rect = penButtonRef.current.getBoundingClientRect();
+      setColorPickerPos({
+        top: rect.top,
+        right: window.innerWidth - rect.left + 8,
+      });
     }
+    setShowColorPicker(prev => !prev);
   };
 
   // --- SAVES ---
@@ -417,14 +496,17 @@ const App = () => {
   let scale = 1, imgWidth = 0, imgHeight = 0, x = 0, y = 0, logoConfig = { w: 0, h: 0, x: 0, y: 0 };
 
   if (assets.lines && dimensions.width > 0) {
-    scale = Math.min((dimensions.width * 0.95) / assets.lines.width, (dimensions.height * 0.95) / assets.lines.height);
+    // Force portrait orientation for the court image
+    // courtHalf is landscape by nature, but we want it portrait
+    // We fit to the available dimensions
+    scale = Math.min((dimensions.width * 0.98) / assets.lines.width, (dimensions.height * 0.98) / assets.lines.height);
     imgWidth = assets.lines.width * scale;
     imgHeight = assets.lines.height * scale;
     x = (dimensions.width - imgWidth) / 2;
     y = (dimensions.height - imgHeight) / 2;
 
     if (assets.logo) {
-       const logoScale = (imgWidth * 0.20) / assets.logo.width;
+       const logoScale = (imgWidth * 0.22) / assets.logo.width;
        logoConfig.w = assets.logo.width * logoScale;
        logoConfig.h = assets.logo.height * logoScale;
        logoConfig.x = x + (imgWidth - logoConfig.w) / 2;
@@ -433,31 +515,31 @@ const App = () => {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-slate-900 text-white font-sans overflow-hidden">
+    <div className="flex flex-col h-screen bg-slate-900 text-white font-sans overflow-hidden" style={{ userSelect: 'none', WebkitUserSelect: 'none' }}>
 
       {/* HEADER */}
-      <header className="px-4 py-2 flex justify-between items-center bg-[#062553] border-b-4 border-[#041b3d] shadow-lg h-16 shrink-0 z-20">
+      <header className="px-3 py-2 flex justify-between items-center bg-[#062553] border-b-4 border-[#041b3d] shadow-lg h-14 shrink-0 z-20">
         <div className="flex items-center gap-2">
-            <img src={ASSETS_URLS.logo} alt="Logo" className="w-10 h-10 object-contain drop-shadow-md" />
+            <img src={ASSETS_URLS.logo} alt="Logo" className="w-9 h-9 object-contain drop-shadow-md" />
             <div className="hidden sm:block">
-                <h1 className="font-bold text-lg leading-tight">Prancheta Tática</h1>
+                <h1 className="font-bold text-base leading-tight">Prancheta ANCB</h1>
                 <p className="text-[10px] text-gray-300">Modo Offline</p>
             </div>
         </div>
 
         <div className="flex items-center gap-2">
-            <button onClick={() => setShowLoadModal(true)} className="bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded-lg text-white font-bold text-sm flex items-center gap-2 transition-colors">
-                <FolderOpen size={18} /> <span className="hidden sm:inline">Jogadas</span>
+            <button onClick={() => setShowLoadModal(true)} className="bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded-lg text-white font-bold text-sm flex items-center gap-1.5 transition-colors">
+                <FolderOpen size={16} /> <span className="hidden sm:inline">Jogadas</span>
             </button>
-            <button onClick={() => setShowSaveModal(true)} className="bg-green-600 hover:bg-green-700 px-3 py-2 rounded-lg text-white font-bold text-sm flex items-center gap-2 shadow-lg transition-colors">
-                <Save size={18} /> <span className="hidden sm:inline">Salvar</span>
+            <button onClick={() => setShowSaveModal(true)} className="bg-green-600 hover:bg-green-700 px-3 py-1.5 rounded-lg text-white font-bold text-sm flex items-center gap-1.5 shadow-lg transition-colors">
+                <Save size={16} /> <span className="hidden sm:inline">Salvar</span>
             </button>
-            <div className="w-px h-8 bg-slate-700 mx-1"></div>
+            <div className="w-px h-7 bg-slate-700 mx-1"></div>
              {selectedTokenId && (
-                <button onClick={removeSelectedToken} className="bg-red-600 p-2 rounded-lg text-white shadow animate-pulse"><Trash2 size={20} /></button>
+                <button onClick={removeSelectedToken} className="bg-red-600 p-1.5 rounded-lg text-white shadow animate-pulse"><Trash2 size={18} /></button>
             )}
-            <button onClick={() => setShowMenu(true)} className="bg-[#F27405] hover:bg-orange-600 text-white px-3 py-2 rounded-lg font-bold flex items-center gap-2 ml-1">
-                <UserPlus size={20} />
+            <button onClick={() => setShowMenu(true)} className="bg-[#F27405] hover:bg-orange-600 text-white px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 ml-1">
+                <UserPlus size={18} />
             </button>
         </div>
       </header>
@@ -466,14 +548,19 @@ const App = () => {
       <main className="flex-1 w-full relative bg-slate-800 flex overflow-hidden" ref={containerRef}>
 
         {/* LADO ESQUERDO: QUADRA */}
-        <div className="flex-1 relative">
+        <div className="flex-1 relative overflow-hidden">
             {dimensions.width > 0 && (
             <Stage
+                ref={stageRef}
                 width={dimensions.width} height={dimensions.height}
-                onMouseDown={handleMouseDown} onMousemove={handleMouseMove} onMouseup={handleMouseUp}
-                onTouchStart={handleMouseDown} onTouchMove={handleMouseMove} onTouchEnd={handleMouseUp}
-                className={tool === 'pen' ? 'cursor-crosshair' : 'cursor-default'}
-                onClick={(e) => { if (tool === 'cursor' && e.target === e.target.getStage()) setSelectedTokenId(null); }}
+                onMouseDown={handlePointerDown}
+                onMousemove={handlePointerMove}
+                onMouseup={handlePointerUp}
+                onTouchStart={handlePointerDown}
+                onTouchMove={handlePointerMove}
+                onTouchEnd={handlePointerUp}
+                style={{ cursor: 'crosshair', touchAction: 'none' }}
+                onClick={(e) => { if (e.target === e.target.getStage()) setSelectedTokenId(null); }}
             >
                 <Layer>
                      <Rect x={x} y={y} width={imgWidth} height={imgHeight} fillLinearGradientStartPoint={{ x: 0, y: 0 }} fillLinearGradientEndPoint={{ x: imgWidth, y: imgHeight }} fillLinearGradientColorStops={[0, '#2574d1', 1, '#1c64b6']} cornerRadius={5} />
@@ -481,10 +568,10 @@ const App = () => {
                     {assets.lines && <KonvaImage image={assets.lines} width={imgWidth} height={imgHeight} x={x} y={y} listening={false} />}
 
                     {lines.map((line, i) => (
-                        <Line key={i} points={line.points} stroke={line.color} strokeWidth={4} tension={0.5} lineCap="round" lineJoin="round" opacity={0.8} />
+                        <Line key={i} points={line.points} stroke={line.color} strokeWidth={4} tension={0.5} lineCap="round" lineJoin="round" opacity={0.9} listening={false} />
                     ))}
                     {tokens.map(token => (
-                        <PlayerToken key={token.id} token={token} onDragEnd={handleDragEnd} onSelect={setSelectedTokenId} isSelected={selectedTokenId === token.id} isLocked={tool === 'pen'} />
+                        <PlayerToken key={token.id} token={token} onDragEnd={handleDragEnd} onSelect={setSelectedTokenId} isSelected={selectedTokenId === token.id} />
                     ))}
                 </Layer>
             </Stage>
@@ -492,74 +579,76 @@ const App = () => {
         </div>
 
         {/* --- BARRA LATERAL UNIFICADA (FERRAMENTAS + TIMELINE) --- */}
-        <div className="w-[85px] bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-700 flex flex-col items-center py-4 gap-4 z-30 shrink-0 overflow-y-auto custom-scrollbar">
+        <div className="w-[72px] bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-700 flex flex-col items-center py-3 gap-3 z-30 shrink-0 overflow-y-auto">
 
             {/* Ferramentas de Desenho */}
             <div className="flex flex-col items-center gap-2">
-                <button
-                  onClick={() => { setTool('cursor'); setShowColorPicker(false); }}
-                  className={`p-3 rounded-xl transition-all ${tool === 'cursor' ? 'bg-[#F27405] text-white shadow-lg' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
-                >
-                    <MousePointer2 size={24} />
-                </button>
-
-                {/* Botão caneta com indicador da cor atual */}
+                {/* Cor da caneta */}
                 <div className="relative">
                     <button
                       ref={penButtonRef}
-                      onClick={handlePenButtonClick}
-                      className={`p-3 rounded-xl transition-all ${tool === 'pen' ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
+                      onClick={handleColorButtonClick}
+                      className="p-2.5 rounded-xl bg-gray-700 hover:bg-gray-600 text-white shadow-lg transition-all"
+                      title="Cor da caneta"
                     >
-                        <Pencil size={24} />
+                      {/* Color circle indicator */}
+                      <div className="w-5 h-5 rounded-full border-2 border-white" style={{ backgroundColor: lineColor }} />
                     </button>
-                    {/* Bolinha indicando a cor selecionada */}
-                    <span
-                      className="absolute bottom-1 right-1 w-3 h-3 rounded-full border-2 border-gray-700 pointer-events-none"
-                      style={{ backgroundColor: lineColor }}
-                    />
                 </div>
 
-                <button onClick={undoLastLine} className="p-3 rounded-xl text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"><Undo size={24} /></button>
-                <button onClick={clearLines} className="p-3 rounded-xl text-gray-500 hover:text-red-600 transition-colors"><Eraser size={24} /></button>
+                <button onClick={undoLastLine} className="p-2.5 rounded-xl text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800" title="Desfazer"><Undo size={20} /></button>
+                <button onClick={clearLines} className="p-2.5 rounded-xl text-gray-500 hover:text-red-600 transition-colors" title="Limpar desenhos"><Eraser size={20} /></button>
             </div>
 
-            <div className="h-px w-10 bg-gray-300 dark:bg-gray-700 my-1" />
+            {/* Tipo de quadra */}
+            <div className="flex flex-col gap-1 items-center">
+              <button 
+                onClick={() => setCourtType('half')} 
+                className={`text-[9px] font-bold px-1 py-1 rounded w-12 transition-all ${courtType === 'half' ? 'bg-[#F27405] text-white' : 'bg-gray-700 text-gray-300'}`}
+              >1/2</button>
+              <button 
+                onClick={() => setCourtType('full')} 
+                className={`text-[9px] font-bold px-1 py-1 rounded w-12 transition-all ${courtType === 'full' ? 'bg-[#F27405] text-white' : 'bg-gray-700 text-gray-300'}`}
+              >Full</button>
+            </div>
 
-            {/* Timeline Vertical (Quadradinhos) */}
-            <div className="flex flex-col gap-3 items-center w-full">
-                <div className="flex flex-col gap-2 w-full px-2 overflow-y-auto">
+            <div className="h-px w-10 bg-gray-300 dark:bg-gray-700 my-0" />
+
+            {/* Timeline Vertical */}
+            <div className="flex flex-col gap-2 items-center w-full">
+                <div className="flex flex-col gap-2 w-full px-2 overflow-y-auto max-h-64">
                     {frames.map((frame, index) => (
                         <button
                             key={index}
                             onClick={() => changeFrame(index)}
                             className={`
-                                relative w-12 h-12 rounded-lg font-bold text-sm flex items-center justify-center transition-all border-2 shrink-0 mx-auto
+                                relative w-10 h-10 rounded-lg font-bold text-sm flex items-center justify-center transition-all border-2 shrink-0 mx-auto
                                 ${index === currentFrameIndex
                                     ? 'bg-[#F27405] border-[#F27405] text-white shadow-lg'
-                                    : 'bg-gray-100 dark:bg-white/10 border-transparent text-gray-500 dark:text-gray-300 hover:bg-white/20 hover:border-white/30'
+                                    : 'bg-gray-100 dark:bg-white/10 border-transparent text-gray-500 dark:text-gray-300 hover:bg-white/20'
                                 }
                             `}
                         >
                             {index + 1}
-                            {frame.lines.length > 0 && <div className="absolute bottom-1 w-1 h-1 bg-white rounded-full opacity-50"></div>}
+                            {frame.lines.length > 0 && <div className="absolute bottom-0.5 w-1 h-1 bg-white rounded-full opacity-50"></div>}
                         </button>
                     ))}
                 </div>
 
-                <button onClick={addNewFrame} className="bg-blue-600 hover:bg-blue-500 p-3 rounded-full text-white shadow-md transition-transform active:scale-95" title="Novo Frame">
-                    <Plus size={24} />
+                <button onClick={addNewFrame} className="bg-blue-600 hover:bg-blue-500 p-2.5 rounded-full text-white shadow-md transition-transform active:scale-95" title="Novo Frame">
+                    <Plus size={20} />
                 </button>
 
                 {frames.length > 1 && (
-                    <button onClick={deleteFrame} className="text-red-400 hover:text-red-300 hover:bg-white/10 p-2 rounded-lg transition-colors" title="Apagar frame">
-                        <Trash2 size={20} />
+                    <button onClick={deleteFrame} className="text-red-400 hover:text-red-300 hover:bg-white/10 p-1.5 rounded-lg transition-colors" title="Apagar frame">
+                        <Trash2 size={17} />
                     </button>
                 )}
             </div>
         </div>
       </main>
 
-      {/* COLOR PICKER — fixo na tela, sempre na frente de tudo */}
+      {/* COLOR PICKER — fixo na tela */}
       {showColorPicker && (
         <div
           className="fixed flex flex-col gap-2 bg-gray-800 p-3 rounded-2xl shadow-2xl border border-gray-600"
@@ -568,7 +657,7 @@ const App = () => {
             right: colorPickerPos.right,
             zIndex: 9999,
           }}
-          onMouseDown={(e) => e.stopPropagation()} // impede fechar ao clicar dentro
+          onMouseDown={(e) => e.stopPropagation()}
         >
           {PEN_COLORS.map(c => (
             <button
@@ -629,14 +718,14 @@ const App = () => {
             <div className="fixed inset-0 bg-black/50 z-40" onClick={() => setShowMenu(false)} />
             <div className="fixed top-0 right-0 h-full w-80 bg-white dark:bg-gray-900 shadow-2xl z-50 flex flex-col border-l border-gray-700">
                 <div className="p-4 border-b border-gray-800 flex justify-between items-center bg-[#062553]">
-                    <h2 className="font-bold text-white text-lg flex items-center gap-2"><UserPlus size={20} className="text-[#F27405]" /> Elenco</h2>
+                    <h2 className="font-bold text-white text-lg flex items-center gap-2"><UserPlus size={20} className="text-[#F27405]" /> Elenco ANCB</h2>
                     <button onClick={() => setShowMenu(false)} className="text-gray-300 hover:text-white"><X size={24} /></button>
                 </div>
-                <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+                <div className="flex-1 overflow-y-auto p-4">
                     <div className="grid gap-2">
                         {dbPlayers.map(player => (
                             <button key={player.id} onClick={() => addPlayerToCourt(player)} className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-800 transition-colors group text-left w-full text-white">
-                                <div className="w-10 h-10 rounded-full overflow-hidden border-2 border-[#062553] bg-gray-200"><img src={player.foto || `${ASSETS_URLS.defaultAvatar}${player.nome}`} alt={player.nome} className="w-full h-full object-cover" /></div>
+                                <div className="w-10 h-10 rounded-full overflow-hidden border-2 border-[#062553] bg-gray-200 shrink-0"><img src={player.foto || `${ASSETS_URLS.defaultAvatar}${player.nome}`} alt={player.nome} className="w-full h-full object-cover" /></div>
                                 <div><p className="font-bold text-sm">{player.nome}</p></div>
                             </button>
                         ))}
