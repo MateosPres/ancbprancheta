@@ -1,9 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Stage, Layer, Image as KonvaImage, Group, Circle, Text, Rect, Line } from 'react-konva';
-import { UserPlus, X, Trash2, RotateCcw, Pencil, MousePointer2, Undo, Eraser, Save, FolderOpen, Plus, Play, Pause, Copy } from 'lucide-react';
+import { UserPlus, X, Trash2, Pencil, MousePointer2, Undo, Eraser, Save, FolderOpen, Plus, Play, Pause } from 'lucide-react';
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from './services/firebase';
-import Konva from 'konva';
 
 // ============================================================================
 // TIPOS & INTERFACES
