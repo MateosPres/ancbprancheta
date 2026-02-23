@@ -308,10 +308,8 @@ const App = () => {
     // Count existing ANCB tokens to position side by side at top center
     const ancbTokens = tokens.filter(t => t.type === 'ancb');
     const tokenWidth = 60; // spacing between tokens
-    const startX = dimensions.width / 2 - (ancbTokens.length * tokenWidth) / 2 + 30;
-    const xPos = dimensions.width / 2 - ((ancbTokens.length) * tokenWidth) / 2 + ancbTokens.length * tokenWidth - (ancbTokens.length > 0 ? ((ancbTokens.length - 1) * tokenWidth) / 2 : 0);
-    
-    // Simpler: place at top row, evenly spaced
+
+    // Place at top row, evenly spaced
     const totalCount = ancbTokens.length + 1;
     const spacing = tokenWidth;
     const rowWidth = (totalCount - 1) * spacing;
@@ -403,11 +401,6 @@ const App = () => {
     const pos = stage.getPointerPosition();
     if (!pos) return;
 
-    const dx = pos.x - touchStartRef.current.x;
-    const dy = pos.y - touchStartRef.current.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-
-    // If we have a token and moved enough, it's being dragged (handled by konva draggable)
     // If no token and we're drawing, continue line
     if (isActuallyDrawingRef.current && isDrawing) {
       setLines(prev => {
