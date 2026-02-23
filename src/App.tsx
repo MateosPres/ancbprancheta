@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Stage, Layer, Image as KonvaImage, Group, Circle, Text, Rect, Line } from 'react-konva';
-import { UserPlus, X, Trash2, Pencil, MousePointer2, Undo, Eraser, Save, FolderOpen, Plus, Play, Pause } from 'lucide-react';
+import { UserPlus, X, Trash2, Pencil, MousePointer2, Undo, Eraser, Save, FolderOpen, Plus } from 'lucide-react';
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from './services/firebase';
 
@@ -57,7 +57,8 @@ const ASSETS_URLS = {
   defaultAvatar: 'https://ui-avatars.com/api/?background=0D8ABC&color=fff&rounded=true&bold=true&name='
 };
 
-const PEN_COLORS = ['#ffffff', '#F27405', '#ef4444', '#facc15', '#000000'];
+// 3 cores: vermelho saturado, preto, branco
+const PEN_COLORS = ['#ff0000', '#000000', '#ffffff'];
 
 // ============================================================================
 // COMPONENTE TOKEN
@@ -85,7 +86,7 @@ const PlayerToken: React.FC<PlayerTokenProps> = ({ token, onDragEnd, onSelect, i
     const isBase64 = src.startsWith('data:');
 
     if (!isBase64) {
-        img.crossOrigin = 'Anonymous'; 
+        img.crossOrigin = 'Anonymous';
         const separator = src.includes('?') ? '&' : '?';
         img.src = `${src}${separator}t=${new Date().getTime()}`;
     } else {
@@ -141,12 +142,13 @@ const PlayerToken: React.FC<PlayerTokenProps> = ({ token, onDragEnd, onSelect, i
 
 const App = () => {
   const containerRef = useRef<HTMLDivElement>(null);
-  
+  const penButtonRef = useRef<HTMLButtonElement>(null);
+
   // Layout e Assets
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
   const [courtType, setCourtType] = useState<'half' | 'full'>('half');
   const [assets, setAssets] = useState<Assets>({ lines: null, logo: null });
-  
+
   // Dados Básicos
   const [dbPlayers, setDbPlayers] = useState<Player[]>([]);
   const [showMenu, setShowMenu] = useState(false);
@@ -155,16 +157,17 @@ const App = () => {
   // --- SISTEMA DE FRAMES (TIMELINE) ---
   const [frames, setFrames] = useState<Frame[]>([{ tokens: [], lines: [] }]);
   const [currentFrameIndex, setCurrentFrameIndex] = useState(0);
-  
+
   // Estados visuais imediatos
   const [tokens, setTokens] = useState<Token[]>([]);
   const [lines, setLines] = useState<DrawnLine[]>([]);
 
-  // Ferramentas & Animação
+  // Ferramentas
   const [tool, setTool] = useState<'cursor' | 'pen'>('cursor');
-  const [lineColor, setLineColor] = useState('#ffffff');
+  const [lineColor, setLineColor] = useState('#ff0000');
   const [isDrawing, setIsDrawing] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(false);
+  const [showColorPicker, setShowColorPicker] = useState(false);
+  const [colorPickerPos, setColorPickerPos] = useState({ top: 0, right: 0 });
 
   // Salvar/Carregar
   const [showSaveModal, setShowSaveModal] = useState(false);
@@ -204,8 +207,12 @@ const App = () => {
   useEffect(() => {
     const updateSize = () => {
       if (containerRef.current) {
-        setDimensions({ width: containerRef.current.offsetWidth, height: containerRef.current.offsetHeight });
-        // Se for o primeiro load, cria os rivais
+        const sidebarWidth = 85;
+        setDimensions({
+            width: containerRef.current.offsetWidth - sidebarWidth,
+            height: containerRef.current.offsetHeight
+        });
+
         if (tokens.length === 0 && frames[0].tokens.length === 0) {
             const rivals: Token[] = [1, 2, 3, 4, 5].map(num => ({
                 id: `rival-${num}`, type: 'rival', numero: num, x: 40, y: 100 + (num * 60)
@@ -219,26 +226,14 @@ const App = () => {
     return () => window.removeEventListener('resize', updateSize);
   }, []);
 
-  // --- LÓGICA DE ANIMAÇÃO (PLAY) ---
+  // Fecha o color picker ao clicar fora
   useEffect(() => {
-    let interval: any;
-    if (isPlaying) {
-        interval = setInterval(() => {
-            setCurrentFrameIndex(prev => {
-                const next = prev + 1;
-                if (next >= frames.length) {
-                    setIsPlaying(false); // Para no final
-                    return prev;
-                }
-                // Carrega o próximo frame
-                setTokens(frames[next].tokens);
-                setLines(frames[next].lines);
-                return next;
-            });
-        }, 800); // 800ms por frame
-    }
-    return () => clearInterval(interval);
-  }, [isPlaying, frames]);
+    const handleClickOutside = () => {
+      if (showColorPicker) setShowColorPicker(false);
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showColorPicker]);
 
   // --- LÓGICA CORE DOS FRAMES ---
 
@@ -258,26 +253,17 @@ const App = () => {
         setTokens(frames[index].tokens);
         setLines(frames[index].lines);
         setSelectedTokenId(null);
-        setIsPlaying(false);
     }
   };
 
   const addNewFrame = () => {
-    // 1. Pega o estado ATUAL da tela (tokens e posições)
-    // Isso garante que os jogadores continuam exatamente onde estavam
-    const currentTokens = JSON.parse(JSON.stringify(tokens)); // Deep copy segura
-    
-    // 2. Cria o novo frame com esses tokens, mas sem as linhas (limpa o desenho anterior)
+    const currentTokens = JSON.parse(JSON.stringify(tokens));
     const newFrame: Frame = {
         tokens: currentTokens,
-        lines: [] 
+        lines: []
     };
-    
-    // 3. Adiciona e muda para ele
     const newFrames = [...frames, newFrame];
     setFrames(newFrames);
-    
-    // Atualiza estados
     setCurrentFrameIndex(newFrames.length - 1);
     setTokens(newFrame.tokens);
     setLines(newFrame.lines);
@@ -293,14 +279,10 @@ const App = () => {
           setCurrentFrameIndex(newIndex);
           setTokens(newFrames[newIndex].tokens);
           setLines(newFrames[newIndex].lines);
-      } else {
-          updateCurrentFrame([], []); // Limpa se for o único
-          alert("A jogada precisa ter pelo menos 1 frame.");
       }
   };
 
   // --- MANIPULAÇÃO DE TOKENS & DESENHO ---
-  // (Lógica idêntica ao anterior, apenas chamando updateCurrentFrame)
 
   const addPlayerToCourt = (player: Player) => {
     const newToken: Token = {
@@ -320,7 +302,7 @@ const App = () => {
     if (!selectedTokenId) return;
     if (selectedTokenId.startsWith('rival-')) {
         const num = parseInt(selectedTokenId.split('-')[1]);
-        handleDragEnd(selectedTokenId, 40, 100 + (num * 60)); 
+        handleDragEnd(selectedTokenId, 40, 100 + (num * 60));
     } else {
         const newTokens = tokens.filter(t => t.id !== selectedTokenId);
         updateCurrentFrame(newTokens, lines);
@@ -332,7 +314,6 @@ const App = () => {
     const isPenInput = e.evt.pointerType === 'pen';
     if (tool === 'pen' || isPenInput) {
         setIsDrawing(true);
-        if (isPenInput && tool !== 'pen') setTool('pen');
         const pos = e.target.getStage().getPointerPosition();
         const newLine = { tool: 'pen', color: lineColor, points: [pos.x, pos.y] };
         setLines([...lines, newLine]);
@@ -347,7 +328,7 @@ const App = () => {
     if (lastLine) {
         lastLine.points = lastLine.points.concat([point.x, point.y]);
         lines.splice(lines.length - 1, 1, lastLine);
-        setLines(lines.concat()); 
+        setLines(lines.concat());
     }
   };
 
@@ -365,6 +346,38 @@ const App = () => {
 
   const clearLines = () => {
       updateCurrentFrame(tokens, []);
+  };
+
+  // Abre o color picker posicionado fixo na tela, à esquerda do botão
+  const handlePenButtonClick = () => {
+    const newTool = tool === 'pen' ? 'pen' : 'pen';
+    setTool(newTool);
+
+    if (tool !== 'pen') {
+      // Ativando a caneta: mostra color picker
+      if (penButtonRef.current) {
+        const rect = penButtonRef.current.getBoundingClientRect();
+        setColorPickerPos({
+          top: rect.top,
+          right: window.innerWidth - rect.left + 8,
+        });
+      }
+      setShowColorPicker(true);
+    } else {
+      // Já estava na caneta: toggle color picker
+      if (showColorPicker) {
+        setShowColorPicker(false);
+      } else {
+        if (penButtonRef.current) {
+          const rect = penButtonRef.current.getBoundingClientRect();
+          setColorPickerPos({
+            top: rect.top,
+            right: window.innerWidth - rect.left + 8,
+          });
+        }
+        setShowColorPicker(true);
+      }
+    }
   };
 
   // --- SAVES ---
@@ -390,7 +403,7 @@ const App = () => {
       changeFrame(0);
       setShowLoadModal(false);
   };
-  
+
   const deleteSavedPlay = (id: string, e: React.MouseEvent) => {
       e.stopPropagation();
       if(confirm("Apagar jogada?")) {
@@ -401,15 +414,14 @@ const App = () => {
   };
 
   // --- RENDERIZAÇÃO ---
-  const renderWidth = dimensions.width; 
   let scale = 1, imgWidth = 0, imgHeight = 0, x = 0, y = 0, logoConfig = { w: 0, h: 0, x: 0, y: 0 };
-  
+
   if (assets.lines && dimensions.width > 0) {
-    scale = Math.min((renderWidth * 0.95) / assets.lines.width, (dimensions.height * 0.85) / assets.lines.height);
+    scale = Math.min((dimensions.width * 0.95) / assets.lines.width, (dimensions.height * 0.95) / assets.lines.height);
     imgWidth = assets.lines.width * scale;
     imgHeight = assets.lines.height * scale;
-    x = (renderWidth - imgWidth) / 2;
-    y = (dimensions.height - imgHeight) / 2 - 30; // Mais espaço embaixo para a timeline
+    x = (dimensions.width - imgWidth) / 2;
+    y = (dimensions.height - imgHeight) / 2;
 
     if (assets.logo) {
        const logoScale = (imgWidth * 0.20) / assets.logo.width;
@@ -422,7 +434,7 @@ const App = () => {
 
   return (
     <div className="flex flex-col h-screen bg-slate-900 text-white font-sans overflow-hidden">
-      
+
       {/* HEADER */}
       <header className="px-4 py-2 flex justify-between items-center bg-[#062553] border-b-4 border-[#041b3d] shadow-lg h-16 shrink-0 z-20">
         <div className="flex items-center gap-2">
@@ -432,7 +444,7 @@ const App = () => {
                 <p className="text-[10px] text-gray-300">Modo Offline</p>
             </div>
         </div>
-        
+
         <div className="flex items-center gap-2">
             <button onClick={() => setShowLoadModal(true)} className="bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded-lg text-white font-bold text-sm flex items-center gap-2 transition-colors">
                 <FolderOpen size={18} /> <span className="hidden sm:inline">Jogadas</span>
@@ -452,10 +464,12 @@ const App = () => {
 
       {/* ÁREA PRINCIPAL */}
       <main className="flex-1 w-full relative bg-slate-800 flex overflow-hidden" ref={containerRef}>
+
+        {/* LADO ESQUERDO: QUADRA */}
         <div className="flex-1 relative">
             {dimensions.width > 0 && (
-            <Stage 
-                width={dimensions.width} height={dimensions.height} 
+            <Stage
+                width={dimensions.width} height={dimensions.height}
                 onMouseDown={handleMouseDown} onMousemove={handleMouseMove} onMouseup={handleMouseUp}
                 onTouchStart={handleMouseDown} onTouchMove={handleMouseMove} onTouchEnd={handleMouseUp}
                 className={tool === 'pen' ? 'cursor-crosshair' : 'cursor-default'}
@@ -465,111 +479,118 @@ const App = () => {
                      <Rect x={x} y={y} width={imgWidth} height={imgHeight} fillLinearGradientStartPoint={{ x: 0, y: 0 }} fillLinearGradientEndPoint={{ x: imgWidth, y: imgHeight }} fillLinearGradientColorStops={[0, '#2574d1', 1, '#1c64b6']} cornerRadius={5} />
                     {assets.logo && <KonvaImage image={assets.logo} width={logoConfig.w} height={logoConfig.h} x={logoConfig.x} y={logoConfig.y} opacity={0.3} listening={false} />}
                     {assets.lines && <KonvaImage image={assets.lines} width={imgWidth} height={imgHeight} x={x} y={y} listening={false} />}
-                    
+
                     {lines.map((line, i) => (
                         <Line key={i} points={line.points} stroke={line.color} strokeWidth={4} tension={0.5} lineCap="round" lineJoin="round" opacity={0.8} />
                     ))}
                     {tokens.map(token => (
-                        <PlayerToken key={token.id} token={token} onDragEnd={handleDragEnd} onSelect={setSelectedTokenId} isSelected={selectedTokenId === token.id} isLocked={tool === 'pen' || isPlaying} />
+                        <PlayerToken key={token.id} token={token} onDragEnd={handleDragEnd} onSelect={setSelectedTokenId} isSelected={selectedTokenId === token.id} isLocked={tool === 'pen'} />
                     ))}
                 </Layer>
             </Stage>
             )}
         </div>
 
-        {/* FERRAMENTAS LATERAIS */}
-        <div className="absolute right-4 top-1/2 transform -translate-y-1/2 bg-white dark:bg-gray-900 rounded-2xl shadow-2xl p-2 flex flex-col items-center gap-2 border border-gray-200 dark:border-gray-700 z-30">
-            <button onClick={() => setTool('cursor')} className={`p-3 rounded-xl ${tool === 'cursor' ? 'bg-[#F27405] text-white' : 'text-gray-500'}`}><MousePointer2 size={24} /></button>
-            <div className="h-px w-8 bg-gray-300 dark:bg-gray-700 my-1" />
-            <div className="relative group">
-                <button onClick={() => setTool('pen')} className={`p-3 rounded-xl ${tool === 'pen' ? 'bg-blue-600 text-white' : 'text-gray-500'}`}><Pencil size={24} /></button>
-                {tool === 'pen' && (
-                    <div className="absolute right-full top-0 mr-3 bg-white dark:bg-gray-800 p-2 rounded-xl shadow-xl flex flex-col gap-2">
-                        {PEN_COLORS.map(c => <button key={c} onClick={(e) => { e.stopPropagation(); setLineColor(c); }} className={`w-6 h-6 rounded-full border border-white/20 ${lineColor === c ? 'ring-2 ring-blue-500 scale-110' : ''}`} style={{ backgroundColor: c }} />)}
-                    </div>
-                )}
-            </div>
-            <div className="h-px w-8 bg-gray-300 dark:bg-gray-700 my-1" />
-            <button onClick={undoLastLine} className="p-3 rounded-xl text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"><Undo size={24} /></button>
-            <button onClick={clearLines} className="p-3 rounded-xl text-gray-500 hover:text-red-600"><Eraser size={24} /></button>
-        </div>
+        {/* --- BARRA LATERAL UNIFICADA (FERRAMENTAS + TIMELINE) --- */}
+        <div className="w-[85px] bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-700 flex flex-col items-center py-4 gap-4 z-30 shrink-0 overflow-y-auto custom-scrollbar">
 
-        {/* --- NOVA BARRA DE TIMELINE (THUMBNAILS) --- */}
-        <div className="absolute bottom-6 left-1/2 transform -translate-x-1/2 bg-[#041b3d]/90 backdrop-blur-md text-white rounded-2xl shadow-2xl p-3 flex items-center gap-3 border border-white/10 z-30 overflow-x-auto max-w-[90vw]">
-            
-            {/* Botão de Play */}
-            <button 
-                onClick={() => setIsPlaying(!isPlaying)} 
-                className={`p-3 rounded-xl transition-all ${isPlaying ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600'}`}
-                title={isPlaying ? "Pausar" : "Reproduzir Jogada"}
-            >
-                {isPlaying ? <Pause size={20} fill="white" /> : <Play size={20} fill="white" />}
-            </button>
-
-            <div className="w-px h-8 bg-white/20 mx-1"></div>
-
-            {/* Lista de Frames (Quadradinhos) */}
-            <div className="flex gap-2 items-center overflow-x-auto custom-scrollbar pb-1 px-1" style={{ maxWidth: '400px' }}>
-                {frames.map((frame, index) => (
-                    <button 
-                        key={index}
-                        onClick={() => changeFrame(index)}
-                        className={`
-                            relative w-10 h-10 rounded-lg font-bold text-sm flex items-center justify-center transition-all border-2
-                            ${index === currentFrameIndex 
-                                ? 'bg-[#F27405] border-[#F27405] text-white shadow-lg scale-110 z-10' // Ativo
-                                : 'bg-white/10 border-transparent text-gray-300 hover:bg-white/20 hover:border-white/30' // Inativo
-                            }
-                        `}
-                    >
-                        {index + 1}
-                        {/* Indicador se o frame tem desenho */}
-                        {frame.lines.length > 0 && (
-                            <div className="absolute bottom-1 w-1 h-1 bg-white rounded-full opacity-50"></div>
-                        )}
-                    </button>
-                ))}
-            </div>
-
-            <div className="w-px h-8 bg-white/20 mx-1"></div>
-
-            {/* Ações de Frame */}
-            <div className="flex gap-2">
-                <button 
-                    onClick={addNewFrame} 
-                    className="bg-blue-600 hover:bg-blue-500 p-2.5 rounded-xl text-white shadow-md transition-transform active:scale-95"
-                    title="Duplicar frame atual"
+            {/* Ferramentas de Desenho */}
+            <div className="flex flex-col items-center gap-2">
+                <button
+                  onClick={() => { setTool('cursor'); setShowColorPicker(false); }}
+                  className={`p-3 rounded-xl transition-all ${tool === 'cursor' ? 'bg-[#F27405] text-white shadow-lg' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
                 >
-                    <Plus size={20} />
+                    <MousePointer2 size={24} />
                 </button>
-                
-                {frames.length > 1 && (
-                    <button 
-                        onClick={deleteFrame} 
-                        className="text-red-400 hover:text-red-300 hover:bg-white/10 p-2.5 rounded-xl transition-colors" 
-                        title="Apagar este frame"
+
+                {/* Botão caneta com indicador da cor atual */}
+                <div className="relative">
+                    <button
+                      ref={penButtonRef}
+                      onClick={handlePenButtonClick}
+                      className={`p-3 rounded-xl transition-all ${tool === 'pen' ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
                     >
+                        <Pencil size={24} />
+                    </button>
+                    {/* Bolinha indicando a cor selecionada */}
+                    <span
+                      className="absolute bottom-1 right-1 w-3 h-3 rounded-full border-2 border-gray-700 pointer-events-none"
+                      style={{ backgroundColor: lineColor }}
+                    />
+                </div>
+
+                <button onClick={undoLastLine} className="p-3 rounded-xl text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"><Undo size={24} /></button>
+                <button onClick={clearLines} className="p-3 rounded-xl text-gray-500 hover:text-red-600 transition-colors"><Eraser size={24} /></button>
+            </div>
+
+            <div className="h-px w-10 bg-gray-300 dark:bg-gray-700 my-1" />
+
+            {/* Timeline Vertical (Quadradinhos) */}
+            <div className="flex flex-col gap-3 items-center w-full">
+                <div className="flex flex-col gap-2 w-full px-2 overflow-y-auto">
+                    {frames.map((frame, index) => (
+                        <button
+                            key={index}
+                            onClick={() => changeFrame(index)}
+                            className={`
+                                relative w-12 h-12 rounded-lg font-bold text-sm flex items-center justify-center transition-all border-2 shrink-0 mx-auto
+                                ${index === currentFrameIndex
+                                    ? 'bg-[#F27405] border-[#F27405] text-white shadow-lg'
+                                    : 'bg-gray-100 dark:bg-white/10 border-transparent text-gray-500 dark:text-gray-300 hover:bg-white/20 hover:border-white/30'
+                                }
+                            `}
+                        >
+                            {index + 1}
+                            {frame.lines.length > 0 && <div className="absolute bottom-1 w-1 h-1 bg-white rounded-full opacity-50"></div>}
+                        </button>
+                    ))}
+                </div>
+
+                <button onClick={addNewFrame} className="bg-blue-600 hover:bg-blue-500 p-3 rounded-full text-white shadow-md transition-transform active:scale-95" title="Novo Frame">
+                    <Plus size={24} />
+                </button>
+
+                {frames.length > 1 && (
+                    <button onClick={deleteFrame} className="text-red-400 hover:text-red-300 hover:bg-white/10 p-2 rounded-lg transition-colors" title="Apagar frame">
                         <Trash2 size={20} />
                     </button>
                 )}
             </div>
         </div>
-
       </main>
+
+      {/* COLOR PICKER — fixo na tela, sempre na frente de tudo */}
+      {showColorPicker && (
+        <div
+          className="fixed flex flex-col gap-2 bg-gray-800 p-3 rounded-2xl shadow-2xl border border-gray-600"
+          style={{
+            top: colorPickerPos.top,
+            right: colorPickerPos.right,
+            zIndex: 9999,
+          }}
+          onMouseDown={(e) => e.stopPropagation()} // impede fechar ao clicar dentro
+        >
+          {PEN_COLORS.map(c => (
+            <button
+              key={c}
+              onClick={() => { setLineColor(c); setShowColorPicker(false); }}
+              className="w-8 h-8 rounded-full border-2 transition-transform hover:scale-110 active:scale-95"
+              style={{
+                backgroundColor: c,
+                borderColor: lineColor === c ? '#F27405' : 'rgba(255,255,255,0.2)',
+                boxShadow: lineColor === c ? '0 0 0 2px #F27405' : 'none',
+              }}
+            />
+          ))}
+        </div>
+      )}
 
       {/* MODAL SALVAR */}
       {showSaveModal && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center backdrop-blur-sm p-4">
             <div className="bg-white dark:bg-gray-800 rounded-xl p-6 w-full max-w-sm shadow-2xl border border-gray-700">
                 <h3 className="text-xl font-bold mb-4 text-gray-900 dark:text-white flex items-center gap-2"><Save size={20} className="text-green-500"/> Salvar Jogada</h3>
-                <input 
-                    autoFocus
-                    type="text" 
-                    placeholder="Nome da jogada (ex: Saída Lateral)" 
-                    className="w-full p-3 rounded-lg bg-gray-100 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white mb-4 outline-none focus:ring-2 focus:ring-[#F27405]"
-                    value={playName}
-                    onChange={(e) => setPlayName(e.target.value)}
-                />
+                <input autoFocus type="text" placeholder="Nome da jogada" className="w-full p-3 rounded-lg bg-gray-100 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white mb-4 outline-none focus:ring-2 focus:ring-[#F27405]" value={playName} onChange={(e) => setPlayName(e.target.value)} />
                 <div className="flex gap-2 justify-end">
                     <button onClick={() => setShowSaveModal(false)} className="px-4 py-2 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Cancelar</button>
                     <button onClick={savePlay} className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-bold">Salvar</button>
@@ -582,19 +603,16 @@ const App = () => {
       {showLoadModal && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center backdrop-blur-sm p-4">
             <div className="bg-white dark:bg-gray-800 rounded-xl w-full max-w-md shadow-2xl border border-gray-700 flex flex-col max-h-[80vh]">
-                <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
-                    <h3 className="text-xl font-bold text-gray-900 dark:text-white flex items-center gap-2"><FolderOpen size={20} className="text-[#F27405]"/> Minhas Jogadas</h3>
-                    <button onClick={() => setShowLoadModal(false)}><X size={24} className="text-gray-500"/></button>
+                <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center text-gray-900 dark:text-white">
+                    <h3 className="text-xl font-bold flex items-center gap-2"><FolderOpen size={20} className="text-[#F27405]"/> Minhas Jogadas</h3>
+                    <button onClick={() => setShowLoadModal(false)}><X size={24} /></button>
                 </div>
-                <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-                    {savedPlays.length === 0 ? <div className="text-center py-8 text-gray-500"><p>Nenhuma jogada salva ainda.</p></div> : (
+                <div className="flex-1 overflow-y-auto p-4">
+                    {savedPlays.length === 0 ? <p className="text-center py-8 text-gray-500">Nenhuma jogada salva.</p> : (
                         <div className="space-y-2">
                             {savedPlays.map(play => (
-                                <div key={play.id} onClick={() => loadPlay(play)} className="bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700 p-3 rounded-lg cursor-pointer border border-transparent hover:border-[#F27405] transition-all group flex justify-between items-center">
-                                    <div>
-                                        <p className="font-bold text-gray-800 dark:text-white">{play.name}</p>
-                                        <p className="text-xs text-gray-500">{new Date(play.createdAt).toLocaleDateString()} • {play.frames.length} frames</p>
-                                    </div>
+                                <div key={play.id} onClick={() => loadPlay(play)} className="bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700 p-3 rounded-lg cursor-pointer border border-transparent hover:border-[#F27405] transition-all group flex justify-between items-center text-gray-900 dark:text-white">
+                                    <div><p className="font-bold">{play.name}</p><p className="text-xs text-gray-500">{play.frames.length} frames</p></div>
                                     <button onClick={(e) => deleteSavedPlay(play.id, e)} className="p-2 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={18} /></button>
                                 </div>
                             ))}
@@ -617,9 +635,9 @@ const App = () => {
                 <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
                     <div className="grid gap-2">
                         {dbPlayers.map(player => (
-                            <button key={player.id} onClick={() => addPlayerToCourt(player)} className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-800 transition-colors group text-left w-full">
+                            <button key={player.id} onClick={() => addPlayerToCourt(player)} className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-800 transition-colors group text-left w-full text-white">
                                 <div className="w-10 h-10 rounded-full overflow-hidden border-2 border-[#062553] bg-gray-200"><img src={player.foto || `${ASSETS_URLS.defaultAvatar}${player.nome}`} alt={player.nome} className="w-full h-full object-cover" /></div>
-                                <div><p className="font-bold text-gray-200 text-sm">{player.nome}</p></div>
+                                <div><p className="font-bold text-sm">{player.nome}</p></div>
                             </button>
                         ))}
                     </div>
