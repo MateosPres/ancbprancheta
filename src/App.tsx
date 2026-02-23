@@ -17,7 +17,7 @@ interface Player {
 
 interface Token {
   id: string;
-  type: 'ancb' | 'rival';
+  type: 'ancb' | 'rival' | 'ancb-generic';
   x: number;
   y: number;
   nome?: string;
@@ -77,7 +77,7 @@ const PlayerToken: React.FC<PlayerTokenProps> = ({ token, onDragEnd, onSelect, i
   const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
 
   useEffect(() => {
-    if (token.type === 'rival') {
+    if (token.type === 'rival' || token.type === 'ancb-generic') {
         setStatus('error');
         return;
     }
@@ -107,9 +107,10 @@ const PlayerToken: React.FC<PlayerTokenProps> = ({ token, onDragEnd, onSelect, i
   const radius = 22;
   const diameter = radius * 2;
   const isOpponent = token.type === 'rival';
+  const isGeneric = token.type === 'ancb-generic';
   const mainColor = isOpponent ? '#ef4444' : '#062553';
   const strokeColor = isOpponent ? '#991b1b' : '#041b3d';
-  const showText = isOpponent || status !== 'loaded';
+  const showText = isOpponent || isGeneric || status !== 'loaded';
 
   return (
     <Group
@@ -127,9 +128,12 @@ const PlayerToken: React.FC<PlayerTokenProps> = ({ token, onDragEnd, onSelect, i
       )}
       <Circle radius={radius} stroke={isSelected ? '#F27405' : strokeColor} strokeWidth={isSelected ? 4 : 2} fillEnabled={false} />
       {showText && (
-        <Text text={isOpponent ? token.numero?.toString() : token.nome?.charAt(0).toUpperCase()} fontSize={20} fontStyle="bold" fill="white" align="center" verticalAlign="middle" offsetX={6} offsetY={8} listening={false} />
+        <Text
+          text={(isOpponent || isGeneric) ? token.numero?.toString() : token.nome?.charAt(0).toUpperCase()}
+          fontSize={20} fontStyle="bold" fill="white" align="center" verticalAlign="middle" offsetX={6} offsetY={8} listening={false}
+        />
       )}
-      {!isOpponent && token.nome && (
+      {!isOpponent && !isGeneric && token.nome && (
         <Text text={token.nome.split(' ')[0]} y={radius + 6} fontSize={11} fill="white" align="center" width={100} offsetX={50} shadowColor="black" shadowBlur={3} listening={false} />
       )}
     </Group>
@@ -215,9 +219,12 @@ const App = () => {
 
         if (tokens.length === 0 && frames[0].tokens.length === 0) {
             const rivals: Token[] = [1, 2, 3, 4, 5].map(num => ({
-                id: `rival-${num}`, type: 'rival', numero: num, x: 40, y: 100 + (num * 60)
+                id: `rival-${num}`, type: 'rival' as const, numero: num, x: 38, y: 90 + (num * 58)
             }));
-            updateCurrentFrame(rivals, []);
+            const generics: Token[] = [1, 2, 3, 4, 5].map(num => ({
+                id: `ancb-generic-${num}`, type: 'ancb-generic' as const, numero: num, x: 82, y: 90 + (num * 58)
+            }));
+            updateCurrentFrame([...rivals, ...generics], []);
         }
       }
     };
@@ -302,7 +309,10 @@ const App = () => {
     if (!selectedTokenId) return;
     if (selectedTokenId.startsWith('rival-')) {
         const num = parseInt(selectedTokenId.split('-')[1]);
-        handleDragEnd(selectedTokenId, 40, 100 + (num * 60));
+        handleDragEnd(selectedTokenId, 38, 90 + (num * 58));
+    } else if (selectedTokenId.startsWith('ancb-generic-')) {
+        const num = parseInt(selectedTokenId.split('-')[2]);
+        handleDragEnd(selectedTokenId, 82, 90 + (num * 58));
     } else {
         const newTokens = tokens.filter(t => t.id !== selectedTokenId);
         updateCurrentFrame(newTokens, lines);
@@ -446,6 +456,24 @@ const App = () => {
         </div>
 
         <div className="flex items-center gap-2">
+            {/* Seletor de tipo de quadra */}
+            <div className="flex items-center bg-slate-800 rounded-lg p-1 gap-1 border border-slate-600">
+                <button
+                  onClick={() => setCourtType('half')}
+                  className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${courtType === 'half' ? 'bg-[#F27405] text-white shadow' : 'text-gray-400 hover:text-white'}`}
+                >
+                  ½ Quadra
+                </button>
+                <button
+                  onClick={() => setCourtType('full')}
+                  className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${courtType === 'full' ? 'bg-[#F27405] text-white shadow' : 'text-gray-400 hover:text-white'}`}
+                >
+                  Quadra Toda
+                </button>
+            </div>
+
+            <div className="w-px h-8 bg-slate-700 mx-1"></div>
+
             <button onClick={() => setShowLoadModal(true)} className="bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded-lg text-white font-bold text-sm flex items-center gap-2 transition-colors">
                 <FolderOpen size={18} /> <span className="hidden sm:inline">Jogadas</span>
             </button>
