@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Stage, Layer, Image as KonvaImage, Group, Circle, Text, Rect, Line } from 'react-konva';
-import { UserPlus, X, Trash2, Undo, Eraser, Save, FolderOpen, Plus } from 'lucide-react';
+import { UserPlus, X, Trash2, Undo, Eraser, Save, FolderOpen, Plus, Download } from 'lucide-react';
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from './services/firebase';
 
@@ -186,6 +186,33 @@ const App = () => {
   const [showLoadModal, setShowLoadModal] = useState(false);
   const [playName, setPlayName] = useState('');
   const [savedPlays, setSavedPlays] = useState<SavedPlay[]>([]);
+  const [installPrompt, setInstallPrompt] = useState<any>(null);
+  const [canInstall, setCanInstall] = useState(false);
+
+  // PWA Install prompt
+  useEffect(() => {
+    const handler = (e: any) => {
+      e.preventDefault();
+      setInstallPrompt(e);
+      setCanInstall(true);
+    };
+    window.addEventListener('beforeinstallprompt', handler);
+    window.addEventListener('appinstalled', () => {
+      setCanInstall(false);
+      setInstallPrompt(null);
+    });
+    return () => window.removeEventListener('beforeinstallprompt', handler);
+  }, []);
+
+  const handleInstallClick = async () => {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    const { outcome } = await installPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setCanInstall(false);
+      setInstallPrompt(null);
+    }
+  };
 
   // Buscar jogadores e jogadas salvas
   useEffect(() => {
@@ -516,6 +543,15 @@ const App = () => {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {canInstall && (
+            <button
+              onClick={handleInstallClick}
+              className="bg-[#F27405] hover:bg-orange-600 px-2.5 py-1.5 rounded-lg text-white font-bold text-xs flex items-center gap-1.5 shadow-lg transition-colors animate-pulse"
+              title="Instalar aplicativo"
+            >
+              <Download size={15} /><span>Instalar</span>
+            </button>
+          )}
           <button
             onClick={() => setShowLoadModal(true)}
             className="bg-slate-700 hover:bg-slate-600 px-2.5 py-1.5 rounded-lg text-white font-bold text-xs flex items-center gap-1 transition-colors"
