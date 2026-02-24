@@ -516,6 +516,33 @@ const App = () => {
     setShowLoadModal(false);
   };
 
+  const newPlay = () => {
+    const hasContent = frames.length > 1 || frames[0].lines.length > 0 ||
+      frames[0].tokens.some(t => t.type === 'ancb');
+
+    if (hasContent) {
+      const action = window.confirm("Deseja salvar a jogada atual antes de começar uma nova?");
+      if (action) {
+        const name = window.prompt("Nome da jogada:");
+        if (name?.trim()) {
+          const play: SavedPlay = {
+            id: Date.now().toString(), name: name.trim(),
+            frames, createdAt: Date.now()
+          };
+          const updated = [play, ...savedPlays];
+          setSavedPlays(updated);
+          localStorage.setItem('ancb_plays', JSON.stringify(updated));
+        }
+      }
+    }
+
+    // Reset to blank
+    const blank: Frame[] = [{ courtType: 'half', tokens: buildDefaultTokens(), lines: [] }];
+    setFrames(blank);
+    setCurrentFrameIndex(0);
+    setSelectedTokenId(null);
+  };
+
   const deleteSavedPlay = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (confirm("Apagar jogada?")) {
@@ -596,6 +623,13 @@ const App = () => {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={newPlay}
+            className="bg-slate-600 hover:bg-slate-500 px-2.5 py-1.5 rounded-lg text-white font-bold text-xs flex items-center gap-1 transition-colors"
+            title="Nova jogada"
+          >
+            <Plus size={15} /><span className="hidden sm:inline">Nova</span>
+          </button>
           <button
             onClick={() => setShowLoadModal(true)}
             className="bg-slate-700 hover:bg-slate-600 px-2.5 py-1.5 rounded-lg text-white font-bold text-xs flex items-center gap-1 transition-colors"
