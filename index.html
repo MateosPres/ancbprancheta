@@ -14,11 +14,16 @@
     <link rel="manifest" href="/ancbprancheta/manifest.json" />
     <title>Prancheta ANCB</title>
     <style>
-      * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+      * {
+        -webkit-tap-highlight-color: transparent;
+        box-sizing: border-box;
+      }
 
       html, body, #root {
-        margin: 0; padding: 0;
-        width: 100%; height: 100%;
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
         overflow: hidden;
         background: #1e293b;
       }
@@ -28,33 +33,9 @@
         overscroll-behavior: none;
         touch-action: none;
       }
-
-      /*
-       * Trava de orientação via CSS:
-       * Se o dispositivo estiver em portrait, rotaciona o app 90° para forçar landscape.
-       * Isso garante que a quadra sempre apareça na horizontal, independente do sensor.
-       */
-      @media screen and (orientation: portrait) {
-        #root {
-          position: fixed;
-          top: 0; left: 0;
-          width: 100vh;
-          height: 100vw;
-          transform-origin: top left;
-          transform: rotate(90deg) translateY(-100%);
-          overflow: hidden;
-        }
-      }
-
-      @media screen and (orientation: landscape) {
-        #root {
-          width: 100vw;
-          height: 100vh;
-        }
-      }
     </style>
-    <script type="module" crossorigin src="/assets/index-CC8IoLJr.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-B3QUmTVk.css">
+    <script type="module" crossorigin src="/assets/index-_YCVgVND.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-zH2HrHVU.css">
   <link rel="manifest" href="/manifest.webmanifest"><script id="vite-plugin-pwa:register-sw" src="/registerSW.js"></script></head>
   <body>
     <div id="root"></div>
