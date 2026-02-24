@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Stage, Layer, Image as KonvaImage, Group, Circle, Text, Rect, Line } from 'react-konva';
-import { UserPlus, X, Trash2, Undo, Eraser, Save, FolderOpen, Plus, Download } from 'lucide-react';
+import { UserPlus, X, Trash2, Undo, Eraser, Save, FolderOpen, Plus } from 'lucide-react';
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from './services/firebase';
 
@@ -17,7 +17,7 @@ interface Player {
 
 interface Token {
   id: string;
-  type: 'ancb' | 'rival' | 'generic';
+  type: 'ancb' | 'rival' | 'generic' | 'ball';
   // Posição normalizada (0-1) relativa ao canvas — sobrevive redimensionamento
   xRatio: number;
   yRatio: number;
@@ -71,7 +71,11 @@ const buildDefaultTokens = (): Token[] => {
     id: `generic-${num}`, type: 'generic' as const, numero: num,
     xRatio: SIDEBAR_X, yRatio: 0.52 + i * 0.09,
   }));
-  return [...rivals, ...generics];
+  const ball: Token = {
+    id: 'ball-1', type: 'ball' as const,
+    xRatio: SIDEBAR_X, yRatio: 0.94,
+  };
+  return [...rivals, ...generics, ball];
 };
 
 // ============================================================================
@@ -92,6 +96,14 @@ const PlayerToken: React.FC<PlayerTokenProps> = ({ token, canvasW, canvasH, onDr
   const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
 
   useEffect(() => {
+    if (token.type === 'ball') {
+      const img = new window.Image();
+      img.crossOrigin = 'Anonymous';
+      img.src = 'https://i.imgur.com/r5lIlfO.png';
+      img.onload = () => { setImage(img); setStatus('loaded'); };
+      img.onerror = () => setStatus('error');
+      return;
+    }
     if (token.type !== 'ancb') { setStatus('error'); return; }
     const img = new window.Image();
     const src = token.foto || `${ASSETS_URLS.defaultAvatar}${token.nome}`;
@@ -108,11 +120,43 @@ const PlayerToken: React.FC<PlayerTokenProps> = ({ token, canvasW, canvasH, onDr
   const px = token.xRatio * canvasW;
   const py = token.yRatio * canvasH;
   const radius = 22;
+  const isBall = token.type === 'ball';
   const isOpponent = token.type === 'rival';
   const isGeneric = token.type === 'generic';
   const mainColor = isOpponent ? '#ef4444' : isGeneric ? '#1e3a5f' : '#062553';
   const strokeColor = isOpponent ? '#991b1b' : isGeneric ? '#0f1f33' : '#041b3d';
   const showText = isOpponent || isGeneric || status !== 'loaded';
+
+  // Ball token is smaller
+  const tokenRadius = isBall ? 14 : radius;
+
+  if (isBall) {
+    const size = tokenRadius * 2;
+    return (
+      <Group
+        draggable
+        x={px} y={py}
+        onDragEnd={e => onDragEnd(token.id, e.target.x() / canvasW, e.target.y() / canvasH)}
+        onClick={e => { e.cancelBubble = true; onSelect(token.id); }}
+        onTap={e => { e.cancelBubble = true; onSelect(token.id); }}
+      >
+        {image && (
+          <KonvaImage
+            image={image}
+            width={size} height={size}
+            x={-tokenRadius} y={-tokenRadius}
+            listening={false}
+          />
+        )}
+        <Circle
+          radius={tokenRadius}
+          fill="transparent"
+          stroke={isSelected ? '#F27405' : '#041b3d'}
+          strokeWidth={isSelected ? 4 : 3}
+        />
+      </Group>
+    );
+  }
 
   return (
     <Group
@@ -153,6 +197,7 @@ const PlayerToken: React.FC<PlayerTokenProps> = ({ token, canvasW, canvasH, onDr
 const App = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const penButtonRef = useRef<HTMLButtonElement>(null);
+  const stageContainerRef = useRef<HTMLDivElement>(null);
 
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
   const [assets, setAssets] = useState<Assets>({ lines: null, logo: null });
@@ -186,33 +231,6 @@ const App = () => {
   const [showLoadModal, setShowLoadModal] = useState(false);
   const [playName, setPlayName] = useState('');
   const [savedPlays, setSavedPlays] = useState<SavedPlay[]>([]);
-  const [installPrompt, setInstallPrompt] = useState<any>(null);
-  const [canInstall, setCanInstall] = useState(false);
-
-  // PWA Install prompt
-  useEffect(() => {
-    const handler = (e: any) => {
-      e.preventDefault();
-      setInstallPrompt(e);
-      setCanInstall(true);
-    };
-    window.addEventListener('beforeinstallprompt', handler);
-    window.addEventListener('appinstalled', () => {
-      setCanInstall(false);
-      setInstallPrompt(null);
-    });
-    return () => window.removeEventListener('beforeinstallprompt', handler);
-  }, []);
-
-  const handleInstallClick = async () => {
-    if (!installPrompt) return;
-    installPrompt.prompt();
-    const { outcome } = await installPrompt.userChoice;
-    if (outcome === 'accepted') {
-      setCanInstall(false);
-      setInstallPrompt(null);
-    }
-  };
 
   // Buscar jogadores e jogadas salvas
   useEffect(() => {
@@ -371,6 +389,8 @@ const App = () => {
     } else if (selectedTokenId.startsWith('generic-')) {
       const num = parseInt(selectedTokenId.split('-')[1]);
       updateCurrentFrame({ tokens: tokens.map(t => t.id === selectedTokenId ? { ...t, xRatio: SIDEBAR_X, yRatio: 0.52 + (num - 1) * 0.09 } : t) });
+    } else if (selectedTokenId === 'ball-1') {
+      updateCurrentFrame({ tokens: tokens.map(t => t.id === 'ball-1' ? { ...t, xRatio: SIDEBAR_X, yRatio: 0.94 } : t) });
     } else {
       updateCurrentFrame({ tokens: tokens.filter(t => t.id !== selectedTokenId) });
     }
@@ -391,10 +411,43 @@ const App = () => {
     return null;
   };
 
+  // In portrait the stage is rotated 90°, so we translate pointer coords
+  // Converte coordenadas do evento nativo para o espaço interno do Stage.
+  // Em portrait, o canvas está rotacionado 90° via CSS (rotate(90deg) translateY(-100%)).
+  // O Konva usa getBoundingClientRect() que já considera a rotação, então getPointerPosition()
+  // retorna coords no espaço do canvas visual (rotacionado), não no espaço lógico interno.
+  // Precisamos converter manualmente a partir do evento nativo.
+  const getStagePos = (e: any): {x: number, y: number} | null => {
+    const stage = e.target.getStage?.() ?? e.target;
+    if (!stage) return null;
+
+    if (!isPortrait) {
+      return stage.getPointerPosition();
+    }
+
+    // Em portrait: pegar coordenada do toque/mouse relativa à página
+    const nativeEvent = e.evt as TouchEvent & MouseEvent;
+    const clientX = nativeEvent.touches?.[0]?.clientX ?? nativeEvent.clientX;
+    const clientY = nativeEvent.touches?.[0]?.clientY ?? nativeEvent.clientY;
+
+    // O Stage rotacionado ocupa na tela: x=containerLeft, y=containerTop
+    // com width=stageH (dimensão curta) e height=stageW (dimensão longa)
+    const container = stageContainerRef.current;
+    if (!container) return null;
+    const rect = container.getBoundingClientRect();
+
+    // Posição relativa ao container (que é o espaço visual do canvas rotacionado)
+    const screenX = clientX - rect.left;
+    const screenY = clientY - rect.top;
+
+    // Inverter rotação 90°: stage_x = screenY, stage_y = stageH - screenX
+    // (stageH aqui = dimensions.width = altura do container em portrait)
+    return { x: screenY, y: stageH - screenX };
+  };
+
   const handlePointerDown = (e: any) => {
-    const rawPos = e.target.getStage()?.getPointerPosition();
-    if (!rawPos) return;
-    const pos = rawPos; // Konva already handles internal coords correctly
+    const pos = getStagePos(e);
+    if (!pos) return;
     const tokenId = getTokenAtPosition(pos.x, pos.y);
     touchStartRef.current = { tokenId };
     isActuallyDrawingRef.current = false;
@@ -411,7 +464,7 @@ const App = () => {
 
   const handlePointerMove = (e: any) => {
     if (!isActuallyDrawingRef.current || !isDrawing) return;
-    const pos = e.target.getStage()?.getPointerPosition();
+    const pos = getStagePos(e);
     if (!pos) return;
     setFrames(prev => {
       const next = [...prev];
@@ -543,15 +596,6 @@ const App = () => {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {canInstall && (
-            <button
-              onClick={handleInstallClick}
-              className="bg-[#F27405] hover:bg-orange-600 px-2.5 py-1.5 rounded-lg text-white font-bold text-xs flex items-center gap-1.5 shadow-lg transition-colors animate-pulse"
-              title="Instalar aplicativo"
-            >
-              <Download size={15} /><span>Instalar</span>
-            </button>
-          )}
           <button
             onClick={() => setShowLoadModal(true)}
             className="bg-slate-700 hover:bg-slate-600 px-2.5 py-1.5 rounded-lg text-white font-bold text-xs flex items-center gap-1 transition-colors"
@@ -586,7 +630,7 @@ const App = () => {
       >
 
         {/* CANVAS DA QUADRA */}
-        <div className="flex-1 relative overflow-hidden">
+        <div className="flex-1 relative overflow-hidden" ref={stageContainerRef}>
           {dimensions.width > 0 && (
             <Stage
               width={stageW} height={stageH}
