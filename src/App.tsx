@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Stage, Layer, Image as KonvaImage, Group, Circle, Text, Rect, Line } from 'react-konva';
-import { UserPlus, X, Trash2, Undo, Eraser, Save, FolderOpen, Plus, Play, Pause } from 'lucide-react';
+import { UserPlus, X, Trash2, Undo, Eraser, Save, FolderOpen, Plus, Play, Pause, Share2, MoreVertical } from 'lucide-react';
+import GIF from 'gif.js';
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from './services/firebase';
 
@@ -50,6 +51,12 @@ interface Assets {
   logo: HTMLImageElement | null;
 }
 
+interface GifExportState {
+  isGenerating: boolean;
+  progress: number;
+  playId: string | null;
+}
+
 const ASSETS_URLS = {
   courtHalf: 'https://i.imgur.com/SIdCxjw.png',
   courtFull: 'https://i.imgur.com/cw3dO3o.png',
@@ -62,6 +69,15 @@ const SAFE_AREA_TOP = 'env(safe-area-inset-top, 0px)';
 const SAFE_AREA_BOTTOM = 'env(safe-area-inset-bottom, 0px)';
 const SAFE_AREA_LEFT = 'env(safe-area-inset-left, 0px)';
 const SAFE_AREA_RIGHT = 'env(safe-area-inset-right, 0px)';
+const GIF_CONFIG = {
+  FPS: 12,
+  TRANSITION_MS: 900,
+  HOLD_MS: 600,
+  LAST_HOLD_MS: 1600,
+  CANVAS_WIDTH: 800,
+  CANVAS_HEIGHT: 450,
+  QUALITY: 10,
+} as const;
 
 // Tokens laterais: xRatio fixo próximo à borda esquerda do canvas
 const SIDEBAR_X = 0.044;
@@ -248,13 +264,28 @@ const App = () => {
   const [showLoadModal, setShowLoadModal] = useState(false);
   const [playName, setPlayName] = useState('');
   const [savedPlays, setSavedPlays] = useState<SavedPlay[]>([]);
+  const [openPlayMenuId, setOpenPlayMenuId] = useState<string | null>(null);
+  const [gifExport, setGifExport] = useState<GifExportState>({
+    isGenerating: false,
+    progress: 0,
+    playId: null,
+  });
+
+  useEffect(() => {
+    if (!showLoadModal) setOpenPlayMenuId(null);
+  }, [showLoadModal]);
 
   // Buscar jogadores e jogadas salvas
   useEffect(() => {
     const fetchPlayers = async () => {
       try {
         const snap = await getDocs(collection(db, "jogadores"));
-        const list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Player[];
+        const raw = snap.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Partial<Player>[];
+        const list: Player[] = raw.filter((player): player is Player => (
+          typeof player.id === 'string'
+          && typeof player.nome === 'string'
+          && player.nome.trim().length > 0
+        ));
         setDbPlayers(list.sort((a, b) => a.nome.localeCompare(b.nome)));
       } catch (e) { console.error(e); }
     };
@@ -679,14 +710,339 @@ const App = () => {
     setSelectedTokenId(null);
   };
 
-  const deleteSavedPlay = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const deleteSavedPlay = (id: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
     if (confirm("Apagar jogada?")) {
       const updated = savedPlays.filter(p => p.id !== id);
       setSavedPlays(updated);
       localStorage.setItem('ancb_plays', JSON.stringify(updated));
+      setOpenPlayMenuId(null);
     }
   };
+
+  const generateAndShareGif = useCallback(async (play: SavedPlay) => {
+    setGifExport({ isGenerating: true, progress: 0, playId: play.id });
+
+    try {
+      const W = GIF_CONFIG.CANVAS_WIDTH;
+      const H = GIF_CONFIG.CANVAS_HEIGHT;
+      const MS_PER_FRAME = 1000 / GIF_CONFIG.FPS;
+      const easeInOut = (t: number) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+
+      const loadImage = (src: string): Promise<HTMLImageElement> =>
+        new Promise((resolve, reject) => {
+          const img = new window.Image();
+          img.crossOrigin = 'Anonymous';
+          img.onload = () => resolve(img);
+          img.onerror = reject;
+          img.src = src.startsWith('data:') ? src : `${src}${src.includes('?') ? '&' : '?'}cb=${Date.now()}`;
+        });
+
+      const photoSrcs = new Set<string>();
+      play.frames.forEach(frame => frame.tokens.forEach(token => {
+        if (token.type === 'ancb') {
+          photoSrcs.add(token.foto || `${ASSETS_URLS.defaultAvatar}${token.nome}`);
+        }
+      }));
+
+      const ballSrc = 'https://i.imgur.com/r5lIlfO.png';
+      photoSrcs.add(ballSrc);
+
+      const imageCache = new Map<string, HTMLImageElement>();
+      await Promise.allSettled(
+        [...photoSrcs].map(src => loadImage(src).then(img => imageCache.set(src, img)).catch(() => undefined))
+      );
+
+      const firstCourtType = play.frames[0]?.courtType ?? 'half';
+      const [courtImg, logoImg] = await Promise.all([
+        loadImage(firstCourtType === 'half' ? ASSETS_URLS.courtHalf : ASSETS_URLS.courtFull),
+        loadImage(ASSETS_URLS.logo),
+      ]);
+      const courtCache = new Map<'half' | 'full', HTMLImageElement>();
+      courtCache.set(firstCourtType, courtImg);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = W;
+      canvas.height = H;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) throw new Error('Falha ao inicializar canvas 2D');
+
+      const downloadGifBlob = (blob: Blob, fileName: string) => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+      };
+
+      const renderSnapshot = async (
+        frameTokens: Token[],
+        frameLines: DrawnLine[],
+        snapshotCourtType: 'half' | 'full'
+      ) => {
+        ctx.clearRect(0, 0, W, H);
+
+        ctx.fillStyle = '#1e3a5f';
+        ctx.fillRect(0, 0, W, H);
+
+        if (!courtCache.has(snapshotCourtType)) {
+          try {
+            const img = await loadImage(
+              snapshotCourtType === 'half' ? ASSETS_URLS.courtHalf : ASSETS_URLS.courtFull
+            );
+            courtCache.set(snapshotCourtType, img);
+          } catch (_) {
+            // Ignore and continue rendering fallback background.
+          }
+        }
+
+        const court = courtCache.get(snapshotCourtType);
+        if (court) {
+          const scale = Math.min((W * 0.99) / court.width, (H * 0.99) / court.height);
+          const imgW = court.width * scale;
+          const imgH = court.height * scale;
+          const cx = (W - imgW) / 2;
+          const cy = (H - imgH) / 2;
+
+          const grad = ctx.createLinearGradient(cx, cy, cx + imgW, cy + imgH);
+          grad.addColorStop(0, '#2574d1');
+          grad.addColorStop(1, '#1c64b6');
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.roundRect(cx, cy, imgW, imgH, 5);
+          ctx.fill();
+
+          if (logoImg) {
+            const ls = (imgW * 0.22) / logoImg.width;
+            const lw = logoImg.width * ls;
+            const lh = logoImg.height * ls;
+            const lx = cx + (imgW - lw) / 2;
+            const ly = cy + (imgH - lh) / 2;
+            ctx.globalAlpha = 0.3;
+            ctx.drawImage(logoImg, lx, ly, lw, lh);
+            ctx.globalAlpha = 1;
+          }
+
+          ctx.drawImage(court, cx, cy, imgW, imgH);
+
+          frameLines.forEach(line => {
+            if (line.pointRatios.length < 4) return;
+            ctx.beginPath();
+            ctx.strokeStyle = line.color;
+            ctx.lineWidth = 4;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.globalAlpha = 0.9;
+            ctx.moveTo(line.pointRatios[0] * W, line.pointRatios[1] * H);
+            for (let i = 2; i < line.pointRatios.length; i += 2) {
+              ctx.lineTo(line.pointRatios[i] * W, line.pointRatios[i + 1] * H);
+            }
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+          });
+        }
+
+        for (const token of frameTokens) {
+          const px = token.xRatio * W;
+          const py = token.yRatio * H;
+          const isBall = token.type === 'ball';
+          const isOpponent = token.type === 'rival';
+          const isGeneric = token.type === 'generic';
+          const radius = isBall ? 14 : 22;
+          const mainColor = isOpponent ? '#ef4444' : isGeneric ? '#1e3a5f' : '#062553';
+          const strokeColor = isOpponent ? '#991b1b' : isGeneric ? '#0f1f33' : '#041b3d';
+
+          ctx.save();
+          ctx.translate(px, py);
+
+          if (isBall) {
+            const ballImg = imageCache.get(ballSrc);
+            if (ballImg) {
+              ctx.drawImage(ballImg, -radius, -radius, radius * 2, radius * 2);
+            } else {
+              ctx.beginPath();
+              ctx.arc(0, 0, radius, 0, Math.PI * 2);
+              ctx.fillStyle = '#f97316';
+              ctx.fill();
+            }
+            ctx.beginPath();
+            ctx.arc(0, 0, radius, 0, Math.PI * 2);
+            ctx.strokeStyle = strokeColor;
+            ctx.lineWidth = 3;
+            ctx.stroke();
+          } else {
+            ctx.beginPath();
+            ctx.arc(2, 2, radius, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(0,0,0,0.3)';
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.arc(0, 0, radius, 0, Math.PI * 2);
+            ctx.fillStyle = mainColor;
+            ctx.fill();
+
+            if (token.type === 'ancb') {
+              const src = token.foto || `${ASSETS_URLS.defaultAvatar}${token.nome}`;
+              const img = imageCache.get(src);
+              if (img) {
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(0, 0, radius, 0, Math.PI * 2);
+                ctx.clip();
+                ctx.drawImage(img, -radius, -radius, radius * 2, radius * 2);
+                ctx.restore();
+              }
+            }
+
+            ctx.beginPath();
+            ctx.arc(0, 0, radius, 0, Math.PI * 2);
+            ctx.strokeStyle = strokeColor;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            if (token.type !== 'ancb' || !imageCache.has(token.foto || `${ASSETS_URLS.defaultAvatar}${token.nome}`)) {
+              ctx.fillStyle = 'white';
+              ctx.font = 'bold 20px sans-serif';
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              const label = (isOpponent || isGeneric)
+                ? token.numero?.toString() ?? ''
+                : token.nome?.charAt(0).toUpperCase() ?? '';
+              ctx.fillText(label, 0, 0);
+            }
+
+            if (token.type === 'ancb' && token.nome) {
+              ctx.fillStyle = 'white';
+              ctx.font = '10px sans-serif';
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'top';
+              ctx.shadowColor = 'black';
+              ctx.shadowBlur = 3;
+              ctx.fillText(token.nome.split(' ')[0], 0, radius + 5);
+              ctx.shadowBlur = 0;
+            }
+          }
+
+          ctx.restore();
+        }
+      };
+
+      const gif = new GIF({
+        workers: 2,
+        quality: GIF_CONFIG.QUALITY,
+        width: W,
+        height: H,
+        workerScript: '/gif.worker.js',
+        repeat: 0,
+      });
+
+      const totalFrames = play.frames.length;
+      let capturedFrameCount = 0;
+
+      const transitionFrames = Math.round(GIF_CONFIG.TRANSITION_MS / MS_PER_FRAME);
+      const totalSnapshots = Math.max(
+        1,
+        totalFrames + Math.max(0, totalFrames - 1) * transitionFrames
+      );
+
+      const addProgress = () => {
+        capturedFrameCount++;
+        setGifExport(prev => ({
+          ...prev,
+          progress: Math.round((capturedFrameCount / totalSnapshots) * 85),
+        }));
+      };
+
+      for (let fi = 0; fi < totalFrames; fi++) {
+        const frame = play.frames[fi];
+        const isLastFrame = fi === totalFrames - 1;
+        const holdDelayMs = isLastFrame
+          ? Math.max(GIF_CONFIG.LAST_HOLD_MS, MS_PER_FRAME)
+          : Math.max(GIF_CONFIG.HOLD_MS, MS_PER_FRAME);
+
+        // Compacta o HOLD em um unico frame com delay maior, evitando frames duplicados.
+        await renderSnapshot(frame.tokens, frame.lines, frame.courtType);
+        gif.addFrame(canvas, { copy: true, delay: holdDelayMs });
+        addProgress();
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        if (fi < totalFrames - 1) {
+          const nextFrame = play.frames[fi + 1];
+          const fromById = new Map(frame.tokens.map(token => [token.id, token]));
+
+          for (let t = 0; t < transitionFrames; t++) {
+            const progress = t / transitionFrames;
+            const eased = easeInOut(progress);
+
+            const interpolated: Token[] = nextFrame.tokens.map(token => {
+              const from = fromById.get(token.id) || token;
+              return {
+                ...token,
+                xRatio: from.xRatio + (token.xRatio - from.xRatio) * eased,
+                yRatio: from.yRatio + (token.yRatio - from.yRatio) * eased,
+              };
+            });
+
+            await renderSnapshot(interpolated, frame.lines, frame.courtType);
+            gif.addFrame(canvas, { copy: true, delay: MS_PER_FRAME });
+            addProgress();
+            if (t % 4 === 0) await new Promise(resolve => setTimeout(resolve, 0));
+          }
+        }
+      }
+
+      const gifBlob: Blob = await new Promise((resolve, reject) => {
+        gif.on('progress', (progress: number) => {
+          setGifExport(prev => ({ ...prev, progress: 85 + Math.round(progress * 15) }));
+        });
+        gif.on('finished', (blob: Blob) => resolve(blob));
+        // The runtime emits "error", but @types/gif.js does not declare this event.
+        (gif as unknown as { on: (event: 'error', listener: (reason: unknown) => void) => void })
+          .on('error', reject);
+        gif.render();
+      });
+
+      const fileName = `${play.name.replace(/[^a-z0-9]/gi, '_')}_jogada.gif`;
+      const gifFile = new File([gifBlob], fileName, { type: 'image/gif' });
+      const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(window.navigator.userAgent);
+
+      // Em navegadores desktop, faz download direto para evitar falha de gesto do Web Share API.
+      if (!isMobile) {
+        downloadGifBlob(gifBlob, fileName);
+        return;
+      }
+
+      try {
+        if (navigator.canShare && navigator.canShare({ files: [gifFile] })) {
+          await navigator.share({
+            files: [gifFile],
+            title: `Jogada: ${play.name}`,
+            text: 'Confira essa jogada da ANCB!',
+          });
+          return;
+        }
+
+        if (navigator.share) {
+          const url = URL.createObjectURL(gifBlob);
+          await navigator.share({ title: `Jogada: ${play.name}`, url });
+          setTimeout(() => URL.revokeObjectURL(url), 60000);
+          return;
+        }
+      } catch (_) {
+        // Se share falhar (ex.: perdeu user gesture), cai para download.
+      }
+
+      downloadGifBlob(gifBlob, fileName);
+    } catch (err) {
+      console.error('Erro ao gerar GIF:', err);
+      alert('Nao foi possivel gerar o GIF. Tente novamente.');
+    } finally {
+      setGifExport({ isGenerating: false, progress: 0, playId: null });
+    }
+  }, []);
 
   // ============================================================================
   // CÁLCULO DA QUADRA
@@ -1100,26 +1456,65 @@ const App = () => {
               </h3>
               <button onClick={() => setShowLoadModal(false)} className="text-gray-400 hover:text-white"><X size={24} /></button>
             </div>
-            <div className="flex-1 overflow-y-auto p-4">
+            <div className="flex-1 overflow-y-auto p-4" onClick={() => setOpenPlayMenuId(null)}>
               {savedPlays.length === 0
                 ? <p className="text-center py-8 text-gray-500">Nenhuma jogada salva.</p>
                 : (
                   <div className="space-y-2">
                     {savedPlays.map(play => (
                       <div
-                        key={play.id} onClick={() => loadPlay(play)}
-                        className="bg-gray-700/50 hover:bg-gray-700 p-3 rounded-lg cursor-pointer border border-transparent hover:border-[#F27405] transition-all group flex justify-between items-center text-white"
+                        key={play.id}
+                        onClick={() => loadPlay(play)}
+                        className="relative bg-gray-700/50 hover:bg-gray-700 p-3 rounded-lg cursor-pointer border border-transparent hover:border-[#F27405] transition-all group flex justify-between items-center text-white"
                       >
-                        <div>
-                          <p className="font-bold">{play.name}</p>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-bold truncate">{play.name}</p>
                           <p className="text-xs text-gray-400">{play.frames.length} frame{play.frames.length > 1 ? 's' : ''}</p>
                         </div>
-                        <button
-                          onClick={e => deleteSavedPlay(play.id, e)}
-                          className="p-2 text-gray-500 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <Trash2 size={18} />
-                        </button>
+
+                        <div className="shrink-0 ml-2 relative">
+                          <button
+                            onClick={e => {
+                              e.stopPropagation();
+                              setOpenPlayMenuId(prev => (prev === play.id ? null : play.id));
+                            }}
+                            className="p-2 rounded-lg text-gray-300 hover:text-white hover:bg-gray-600 transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                            title="Mais opcoes"
+                          >
+                            <MoreVertical size={18} />
+                          </button>
+
+                          {openPlayMenuId === play.id && (
+                            <div
+                              className="absolute right-0 top-11 w-44 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl z-50 overflow-hidden"
+                              onClick={e => e.stopPropagation()}
+                            >
+                              <button
+                                onClick={async e => {
+                                  e.stopPropagation();
+                                  setOpenPlayMenuId(null);
+                                  await generateAndShareGif(play);
+                                }}
+                                disabled={gifExport.isGenerating}
+                                className={`w-full text-left px-3 py-2.5 text-sm flex items-center gap-2 transition-colors
+                                  ${gifExport.isGenerating
+                                    ? 'text-slate-500 cursor-not-allowed'
+                                    : 'text-white hover:bg-slate-800'
+                                  }
+                                `}
+                              >
+                                <Share2 size={15} /> Compartilhar GIF
+                              </button>
+
+                              <button
+                                onClick={e => deleteSavedPlay(play.id, e)}
+                                className="w-full text-left px-3 py-2.5 text-sm flex items-center gap-2 text-red-400 hover:bg-slate-800 transition-colors"
+                              >
+                                <Trash2 size={15} /> Excluir
+                              </button>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -1173,6 +1568,41 @@ const App = () => {
             </div>
           </div>
         </>
+      )}
+
+      {gifExport.isGenerating && (
+        <div className="fixed inset-0 bg-black/80 z-[100] flex flex-col items-center justify-center backdrop-blur-sm gap-6 p-8">
+          <div className="relative w-20 h-20">
+            <div
+              className="w-20 h-20 rounded-full border-4 border-[#F27405] border-t-transparent animate-spin"
+              style={{ animationDuration: '0.8s' }}
+            />
+            <div className="absolute inset-0 flex items-center justify-center">
+              <span className="text-2xl">🏀</span>
+            </div>
+          </div>
+
+          <div className="text-center">
+            <p className="text-white font-bold text-lg mb-1">Gerando GIF...</p>
+            <p className="text-gray-400 text-sm">
+              {gifExport.progress < 85
+                ? `Renderizando frames... ${gifExport.progress}%`
+                : `Codificando GIF... ${gifExport.progress}%`
+              }
+            </p>
+          </div>
+
+          <div className="w-full max-w-xs bg-gray-700 rounded-full h-3 overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-[#F27405] to-orange-400 rounded-full transition-all duration-300"
+              style={{ width: `${gifExport.progress}%` }}
+            />
+          </div>
+
+          <p className="text-gray-500 text-xs text-center">
+            Isso pode levar alguns segundos...
+          </p>
+        </div>
       )}
     </div>
   );
