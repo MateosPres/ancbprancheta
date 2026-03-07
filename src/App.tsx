@@ -58,6 +58,10 @@ const ASSETS_URLS = {
 };
 
 const PEN_COLORS = ['#ff0000', '#000000', '#ffffff', '#ffff00', '#00ff00'];
+const SAFE_AREA_TOP = 'env(safe-area-inset-top, 0px)';
+const SAFE_AREA_BOTTOM = 'env(safe-area-inset-bottom, 0px)';
+const SAFE_AREA_LEFT = 'env(safe-area-inset-left, 0px)';
+const SAFE_AREA_RIGHT = 'env(safe-area-inset-right, 0px)';
 
 // Tokens laterais: xRatio fixo próximo à borda esquerda do canvas
 const SIDEBAR_X = 0.044;
@@ -86,12 +90,13 @@ interface PlayerTokenProps {
   token: Token;
   canvasW: number;
   canvasH: number;
+  isPortrait: boolean;
   onDragEnd: (id: string, xRatio: number, yRatio: number) => void;
   onSelect: (id: string) => void;
   isSelected: boolean;
 }
 
-const PlayerToken: React.FC<PlayerTokenProps> = ({ token, canvasW, canvasH, onDragEnd, onSelect, isSelected }) => {
+const PlayerToken: React.FC<PlayerTokenProps> = ({ token, canvasW, canvasH, isPortrait, onDragEnd, onSelect, isSelected }) => {
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
 
@@ -134,7 +139,7 @@ const PlayerToken: React.FC<PlayerTokenProps> = ({ token, canvasW, canvasH, onDr
     const size = tokenRadius * 2;
     return (
       <Group
-        draggable
+        draggable={!isPortrait}
         x={px} y={py}
         onDragEnd={e => onDragEnd(token.id, e.target.x() / canvasW, e.target.y() / canvasH)}
         onClick={e => { e.cancelBubble = true; onSelect(token.id); }}
@@ -160,7 +165,7 @@ const PlayerToken: React.FC<PlayerTokenProps> = ({ token, canvasW, canvasH, onDr
 
   return (
     <Group
-      draggable
+      draggable={!isPortrait}
       x={px} y={py}
       onDragEnd={e => onDragEnd(token.id, e.target.x() / canvasW, e.target.y() / canvasH)}
       onClick={e => { e.cancelBubble = true; onSelect(token.id); }}
@@ -236,6 +241,7 @@ const App = () => {
   const [showColorPicker, setShowColorPicker] = useState(false);
   const [colorPickerPos, setColorPickerPos] = useState({ top: 0, right: 0 });
   const touchStartRef = useRef<{ tokenId: string | null } | null>(null);
+  const draggingTokenIdRef = useRef<string | null>(null);
   const isActuallyDrawingRef = useRef(false);
 
   const [showSaveModal, setShowSaveModal] = useState(false);
@@ -274,23 +280,29 @@ const App = () => {
   // Responsividade — sempre baseado no tamanho real do container
   useEffect(() => {
     const updateSize = () => {
+      if (stageContainerRef.current) {
+        const w = stageContainerRef.current.offsetWidth;
+        const h = stageContainerRef.current.offsetHeight;
+        setDimensions({ width: w, height: h });
+        return;
+      }
+
+      // Fallback for very early renders before refs are fully mounted.
       if (containerRef.current) {
         const w = containerRef.current.offsetWidth;
         const h = containerRef.current.offsetHeight;
-        const portrait = h > w;
-        setDimensions({
-          width: portrait ? w : w - 72,
-          height: portrait ? h - 60 : h,
-        });
+        setDimensions({ width: w, height: h });
       }
     };
+
+    const handleOrientationChange = () => setTimeout(updateSize, 200);
+
     updateSize();
     window.addEventListener('resize', updateSize);
-    // Também detectar mudança de orientação
-    window.addEventListener('orientationchange', () => setTimeout(updateSize, 200));
+    window.addEventListener('orientationchange', handleOrientationChange);
     return () => {
       window.removeEventListener('resize', updateSize);
-      window.removeEventListener('orientationchange', updateSize);
+      window.removeEventListener('orientationchange', handleOrientationChange);
     };
   }, []);
 
@@ -540,19 +552,18 @@ const App = () => {
     const clientX = nativeEvent.touches?.[0]?.clientX ?? nativeEvent.clientX;
     const clientY = nativeEvent.touches?.[0]?.clientY ?? nativeEvent.clientY;
 
-    // O Stage rotacionado ocupa na tela: x=containerLeft, y=containerTop
-    // com width=stageH (dimensão curta) e height=stageW (dimensão longa)
-    const container = stageContainerRef.current;
-    if (!container) return null;
-    const rect = container.getBoundingClientRect();
+    // Usar o elemento real do Stage para obter o retângulo visual pós-rotação.
+    const stageEl = stage.container?.();
+    if (!stageEl) return null;
+    const rect = stageEl.getBoundingClientRect();
 
     // Posição relativa ao container (que é o espaço visual do canvas rotacionado)
     const screenX = clientX - rect.left;
     const screenY = clientY - rect.top;
 
-    // Inverter rotação 90°: stage_x = screenY, stage_y = stageH - screenX
-    // (stageH aqui = dimensions.width = altura do container em portrait)
-    return { x: screenY, y: stageH - screenX };
+    // Inverter rotação 90° clockwise: logical_x = visual_y, logical_y = rect.width - visual_x
+    // rect.width no modo portrait corresponde à altura lógica do Stage.
+    return { x: screenY, y: rect.width - screenX };
   };
 
   const handlePointerDown = (e: any) => {
@@ -561,18 +572,30 @@ const App = () => {
     const tokenId = getTokenAtPosition(pos.x, pos.y);
     touchStartRef.current = { tokenId };
     isActuallyDrawingRef.current = false;
-    if (!tokenId) {
-      isActuallyDrawingRef.current = true;
-      setIsDrawing(true);
-      const newLine: DrawnLine = {
-        tool: 'pen', color: lineColor,
-        pointRatios: [pos.x / stageW, pos.y / stageH]
-      };
-      updateCurrentFrame({ lines: [...lines, newLine] });
+    if (tokenId) {
+      draggingTokenIdRef.current = tokenId;
+      setSelectedTokenId(tokenId);
+      return;
     }
+
+    isActuallyDrawingRef.current = true;
+    setIsDrawing(true);
+    const newLine: DrawnLine = {
+      tool: 'pen', color: lineColor,
+      pointRatios: [pos.x / stageW, pos.y / stageH]
+    };
+    updateCurrentFrame({ lines: [...lines, newLine] });
   };
 
   const handlePointerMove = (e: any) => {
+    const draggingTokenId = draggingTokenIdRef.current;
+    if (draggingTokenId) {
+      const pos = getStagePos(e);
+      if (!pos) return;
+      handleDragEnd(draggingTokenId, pos.x / stageW, pos.y / stageH);
+      return;
+    }
+
     if (!isActuallyDrawingRef.current || !isDrawing) return;
     const pos = getStagePos(e);
     if (!pos) return;
@@ -592,6 +615,7 @@ const App = () => {
   const handlePointerUp = () => {
     setIsDrawing(false);
     touchStartRef.current = null;
+    draggingTokenIdRef.current = null;
     isActuallyDrawingRef.current = false;
   };
 
@@ -677,6 +701,7 @@ const App = () => {
 
   let imgWidth = 0, imgHeight = 0, courtX = 0, courtY = 0;
   let logoConfig = { w: 0, h: 0, x: 0, y: 0 };
+  let linesWidth = 0, linesHeight = 0, linesX = 0, linesY = 0;
 
   if (assets.lines && stageW > 0) {
     const scale = Math.min(
@@ -687,6 +712,15 @@ const App = () => {
     imgHeight = assets.lines.height * scale;
     courtX = (stageW - imgWidth) / 2;
     courtY = (stageH - imgHeight) / 2;
+
+    // Em mobile portrait com quadra cheia, reduz apenas o PNG das linhas
+    // mantendo o retângulo azul no mesmo tamanho.
+    const lineFitFactor = isPortrait && courtType === 'full' ? 0.90 : 1;
+    linesWidth = imgWidth * lineFitFactor;
+    linesHeight = imgHeight * lineFitFactor;
+    linesX = courtX + (imgWidth - linesWidth) / 2;
+    linesY = courtY + (imgHeight - linesHeight) / 2;
+
     if (assets.logo) {
       const ls = (imgWidth * 0.22) / assets.logo.width;
       logoConfig = {
@@ -723,16 +757,20 @@ const App = () => {
         // Força layout landscape mesmo se o SO girar
         maxWidth: '100vw',
         maxHeight: '100vh',
+        paddingLeft: SAFE_AREA_LEFT,
+        paddingRight: SAFE_AREA_RIGHT,
       }}
     >
       {/* HEADER */}
-      <header className="px-3 py-2 flex justify-between items-center bg-[#062553] border-b-4 border-[#041b3d] shadow-lg shrink-0 z-20" style={{ height: 56 }}>
+      <header
+        className="px-3 py-2 flex justify-between items-center bg-[#062553] border-b-4 border-[#041b3d] shadow-lg shrink-0 z-20"
+        style={{
+          height: `calc(56px + ${SAFE_AREA_TOP})`,
+          paddingTop: SAFE_AREA_TOP,
+        }}
+      >
         <div className="flex items-center gap-2">
           <img src={ASSETS_URLS.logo} alt="Logo" className="w-9 h-9 object-contain drop-shadow-md" />
-          <div>
-            <h1 className="font-bold text-sm leading-tight">Prancheta ANCB</h1>
-            <p className="text-[10px] text-gray-300">Modo Offline</p>
-          </div>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -776,7 +814,11 @@ const App = () => {
       >
 
         {/* CANVAS DA QUADRA */}
-        <div className="flex-1 relative overflow-hidden" ref={stageContainerRef}>
+        <div
+          className="flex-1 relative overflow-hidden"
+          ref={stageContainerRef}
+          style={{ touchAction: 'none' }}
+        >
           {dimensions.width > 0 && (
             <Stage
               width={stageW} height={stageH}
@@ -814,8 +856,8 @@ const App = () => {
                 )}
                 {assets.lines && (
                   <KonvaImage
-                    image={assets.lines} width={imgWidth} height={imgHeight}
-                    x={courtX} y={courtY} listening={false}
+                    image={assets.lines} width={linesWidth} height={linesHeight}
+                    x={linesX} y={linesY} listening={false}
                   />
                 )}
                 {renderLines.map((line, i) => (
@@ -826,6 +868,7 @@ const App = () => {
                   <PlayerToken
                     key={token.id} token={token}
                     canvasW={stageW} canvasH={stageH}
+                    isPortrait={isPortrait}
                     onDragEnd={handleDragEnd} onSelect={setSelectedTokenId}
                     isSelected={selectedTokenId === token.id}
                   />
@@ -835,24 +878,80 @@ const App = () => {
           )}
         </div>
 
+        {isPortrait && (
+          <div
+            className="absolute left-2 right-2 z-40 pointer-events-none"
+            style={{ bottom: `calc(60px + ${SAFE_AREA_BOTTOM} + 8px)` }}
+          >
+            <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2">
+              <button
+                onClick={togglePlayback}
+                className={`p-2 rounded-xl text-white border shadow-md transition-colors shrink-0 ${isPlaying ? 'bg-amber-600 border-amber-300 hover:bg-amber-500' : 'bg-emerald-600 border-emerald-300 hover:bg-emerald-500'}`}
+                title={isPlaying ? 'Pausar reprodução' : 'Reproduzir jogada'}
+              >
+                {isPlaying ? <Pause size={18} /> : <Play size={18} />}
+              </button>
+
+              {frames.map((frame, index) => (
+                <button
+                  key={index}
+                  onClick={() => changeFrame(index)}
+                  className={`relative rounded-lg font-bold text-xs flex flex-col items-center justify-center transition-all border-2 shrink-0
+                    ${index === currentFrameIndex
+                      ? 'bg-[#F27405] border-orange-200 text-white shadow-lg'
+                      : 'bg-slate-800/95 border-slate-500 text-slate-100 hover:bg-slate-700/95'
+                    }`}
+                  style={{ width: 36, height: 36 }}
+                >
+                  <span>{index + 1}</span>
+                  <span className="text-[7px] opacity-70">{frame.courtType === 'half' ? '1/2' : 'Full'}</span>
+                  {frame.lines.length > 0 && (
+                    <div className="absolute bottom-0.5 w-1 h-1 bg-white rounded-full opacity-50" />
+                  )}
+                </button>
+              ))}
+
+              <button
+                onClick={addNewFrame}
+                className="bg-blue-600 border border-blue-300 hover:bg-blue-500 p-2 rounded-full text-white shadow-md transition-transform active:scale-95 shrink-0"
+                title="Novo Frame"
+              >
+                <Plus size={18} />
+              </button>
+
+              {frames.length > 1 && (
+                <button
+                  onClick={deleteFrame}
+                  className="text-red-200 bg-red-950/70 border border-red-500 hover:bg-red-900/90 p-1.5 rounded-lg transition-colors shrink-0"
+                  title="Apagar frame"
+                >
+                  <Trash2 size={16} />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* BARRA DE FERRAMENTAS — direita em landscape, baixo em portrait */}
         <div
-          className="bg-gray-900 z-30 shrink-0 flex items-center gap-2"
+          className="bg-slate-950 z-30 shrink-0 flex items-center gap-2"
           style={isPortrait ? {
             // Portrait: barra horizontal na base
             flexDirection: 'row',
             width: '100%',
-            height: 60,
-            borderTop: '1px solid #374151',
+            height: `calc(60px + ${SAFE_AREA_BOTTOM})`,
+            borderTop: '1px solid #475569',
             paddingLeft: 8,
             paddingRight: 8,
-            overflowX: 'auto',
+            paddingBottom: SAFE_AREA_BOTTOM,
+            overflowX: 'hidden',
+            justifyContent: 'space-between',
           } : {
             // Landscape: barra vertical na direita
             flexDirection: 'column',
             width: 72,
             height: '100%',
-            borderLeft: '1px solid #374151',
+            borderLeft: '1px solid #475569',
             paddingTop: 12,
             paddingBottom: 12,
             overflowY: 'auto',
@@ -862,16 +961,16 @@ const App = () => {
           <button
             ref={penButtonRef}
             onClick={handleColorButtonClick}
-            className="p-2.5 rounded-xl bg-gray-700 hover:bg-gray-600 shadow-lg transition-all shrink-0"
+            className="p-2.5 rounded-xl bg-slate-700 hover:bg-slate-600 border border-slate-500 shadow-lg transition-all shrink-0"
             title="Cor da caneta"
           >
             <div className="w-5 h-5 rounded-full border-2 border-white" style={{ backgroundColor: lineColor }} />
           </button>
 
-          <button onClick={undoLastLine} className="p-2.5 rounded-xl text-gray-400 hover:bg-gray-800 shrink-0" title="Desfazer">
+          <button onClick={undoLastLine} className="p-2.5 rounded-xl text-slate-200 hover:bg-slate-800 border border-transparent hover:border-slate-600 shrink-0" title="Desfazer">
             <Undo size={20} />
           </button>
-          <button onClick={clearLines} className="p-2.5 rounded-xl text-gray-400 hover:text-red-500 shrink-0" title="Limpar">
+          <button onClick={clearLines} className="p-2.5 rounded-xl text-slate-200 hover:text-red-300 hover:bg-slate-800 border border-transparent hover:border-slate-600 shrink-0" title="Limpar">
             <Eraser size={20} />
           </button>
 
@@ -879,68 +978,71 @@ const App = () => {
           <div className={`flex gap-1 items-center shrink-0 ${isPortrait ? 'flex-row' : 'flex-col w-full px-2'}`}>
             <button
               onClick={() => setCourtType('half')}
-              className={`text-[9px] font-bold py-1 px-2 rounded transition-all ${courtType === 'half' ? 'bg-[#F27405] text-white' : 'bg-gray-700 text-gray-300'}`}
+              className={`text-[9px] font-bold py-1 px-2 rounded border transition-all ${courtType === 'half' ? 'bg-[#F27405] border-orange-200 text-white' : 'bg-slate-700 border-slate-500 text-slate-100'}`}
             >1/2</button>
             <button
               onClick={() => setCourtType('full')}
-              className={`text-[9px] font-bold py-1 px-2 rounded transition-all ${courtType === 'full' ? 'bg-[#F27405] text-white' : 'bg-gray-700 text-gray-300'}`}
+              className={`text-[9px] font-bold py-1 px-2 rounded border transition-all ${courtType === 'full' ? 'bg-[#F27405] border-orange-200 text-white' : 'bg-slate-700 border-slate-500 text-slate-100'}`}
             >Full</button>
           </div>
 
-          <div className={isPortrait ? 'w-px h-8 bg-gray-700 mx-1 shrink-0' : 'h-px w-10 bg-gray-700 shrink-0'} />
+          <div className={isPortrait ? 'w-px h-8 bg-slate-600 mx-1 shrink-0' : 'h-px w-10 bg-slate-600 shrink-0'} />
 
-          <button
-            onClick={togglePlayback}
-            className={`p-2.5 rounded-xl text-white shadow-md transition-colors shrink-0 ${isPlaying ? 'bg-amber-600 hover:bg-amber-500' : 'bg-emerald-600 hover:bg-emerald-500'}`}
-            title={isPlaying ? 'Pausar reprodução' : 'Reproduzir jogada'}
-          >
-            {isPlaying ? <Pause size={20} /> : <Play size={20} />}
-          </button>
-
-          {/* Timeline — scroll horizontal em portrait, vertical em landscape */}
-          <div
-            className="flex gap-2 items-center"
-            style={isPortrait
-              ? { flexDirection: 'row', overflowX: 'auto', maxWidth: 200 }
-              : { flexDirection: 'column', overflowY: 'auto', maxHeight: '40vh', width: '100%', padding: '0 8px' }
-            }
-          >
-            {frames.map((frame, index) => (
-              <button
-                key={index}
-                onClick={() => changeFrame(index)}
-                className={`relative rounded-lg font-bold text-xs flex flex-col items-center justify-center transition-all border-2 shrink-0
-                  ${index === currentFrameIndex
-                    ? 'bg-[#F27405] border-[#F27405] text-white shadow-lg'
-                    : 'bg-white/10 border-transparent text-gray-300 hover:bg-white/20'
-                  }`}
-                style={{ width: 40, height: 40 }}
-              >
-                <span>{index + 1}</span>
-                <span className="text-[7px] opacity-70">{frame.courtType === 'half' ? '1/2' : 'Full'}</span>
-                {frame.lines.length > 0 && (
-                  <div className="absolute bottom-0.5 w-1 h-1 bg-white rounded-full opacity-50" />
-                )}
-              </button>
-            ))}
-          </div>
-
-          <button
-            onClick={addNewFrame}
-            className="bg-blue-600 hover:bg-blue-500 p-2.5 rounded-full text-white shadow-md transition-transform active:scale-95 shrink-0"
-            title="Novo Frame"
-          >
-            <Plus size={20} />
-          </button>
-
-          {frames.length > 1 && (
+          {!isPortrait && (
             <button
-              onClick={deleteFrame}
-              className="text-red-400 hover:text-red-300 hover:bg-white/10 p-1.5 rounded-lg transition-colors shrink-0"
-              title="Apagar frame"
+              onClick={togglePlayback}
+              className={`p-2.5 rounded-xl text-white shadow-md transition-colors shrink-0 ${isPlaying ? 'bg-amber-600 hover:bg-amber-500' : 'bg-emerald-600 hover:bg-emerald-500'}`}
+              title={isPlaying ? 'Pausar reprodução' : 'Reproduzir jogada'}
             >
-              <Trash2 size={17} />
+              {isPlaying ? <Pause size={20} /> : <Play size={20} />}
             </button>
+          )}
+
+          {!isPortrait && (
+            <>
+              {/* Timeline — vertical em landscape */}
+              <div
+                className="flex gap-2 items-center"
+                style={{ flexDirection: 'column', overflowY: 'auto', maxHeight: '40vh', width: '100%', padding: '0 8px' }}
+              >
+                {frames.map((frame, index) => (
+                  <button
+                    key={index}
+                    onClick={() => changeFrame(index)}
+                    className={`relative rounded-lg font-bold text-xs flex flex-col items-center justify-center transition-all border-2 shrink-0
+                      ${index === currentFrameIndex
+                        ? 'bg-[#F27405] border-[#F27405] text-white shadow-lg'
+                        : 'bg-white/10 border-transparent text-gray-300 hover:bg-white/20'
+                      }`}
+                    style={{ width: 40, height: 40 }}
+                  >
+                    <span>{index + 1}</span>
+                    <span className="text-[7px] opacity-70">{frame.courtType === 'half' ? '1/2' : 'Full'}</span>
+                    {frame.lines.length > 0 && (
+                      <div className="absolute bottom-0.5 w-1 h-1 bg-white rounded-full opacity-50" />
+                    )}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                onClick={addNewFrame}
+                className="bg-blue-600 hover:bg-blue-500 p-2.5 rounded-full text-white shadow-md transition-transform active:scale-95 shrink-0"
+                title="Novo Frame"
+              >
+                <Plus size={20} />
+              </button>
+
+              {frames.length > 1 && (
+                <button
+                  onClick={deleteFrame}
+                  className="text-red-400 hover:text-red-300 hover:bg-white/10 p-1.5 rounded-lg transition-colors shrink-0"
+                  title="Apagar frame"
+                >
+                  <Trash2 size={17} />
+                </button>
+              )}
+            </>
           )}
         </div>
       </main>
