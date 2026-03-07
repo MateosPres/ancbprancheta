@@ -67,13 +67,14 @@ const ASSETS_URLS = {
 const PEN_COLORS = ['#ff0000', '#000000', '#ffffff', '#ffff00', '#00ff00'];
 const SAFE_AREA_TOP = 'env(safe-area-inset-top, 0px)';
 const SAFE_AREA_BOTTOM = 'env(safe-area-inset-bottom, 0px)';
+const SAFE_AREA_BOTTOM_WITH_MIN = 'max(env(safe-area-inset-bottom, 0px), 12px)';
 const SAFE_AREA_LEFT = 'env(safe-area-inset-left, 0px)';
 const SAFE_AREA_RIGHT = 'env(safe-area-inset-right, 0px)';
 const GIF_CONFIG = {
   FPS: 12,
   TRANSITION_MS: 900,
   HOLD_MS: 600,
-  LAST_HOLD_MS: 1600,
+  LAST_HOLD_MS: 2000,
   CANVAS_WIDTH: 800,
   CANVAS_HEIGHT: 450,
   QUALITY: 10,
@@ -221,6 +222,7 @@ const App = () => {
   const stageContainerRef = useRef<HTMLDivElement>(null);
 
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+  const [viewportHeight, setViewportHeight] = useState(() => window.innerHeight);
   const [assets, setAssets] = useState<Assets>({ lines: null, logo: null });
   const [dbPlayers, setDbPlayers] = useState<Player[]>([]);
   const [showMenu, setShowMenu] = useState(false);
@@ -334,6 +336,27 @@ const App = () => {
     return () => {
       window.removeEventListener('resize', updateSize);
       window.removeEventListener('orientationchange', handleOrientationChange);
+    };
+  }, []);
+
+  // Usa a altura real visivel para evitar corte do HUD no iPhone (toolbar dinamica do Safari).
+  useEffect(() => {
+    const updateViewportHeight = () => {
+      const visibleHeight = window.visualViewport?.height ?? window.innerHeight;
+      setViewportHeight(Math.round(visibleHeight));
+    };
+
+    updateViewportHeight();
+    window.addEventListener('resize', updateViewportHeight);
+    window.addEventListener('orientationchange', updateViewportHeight);
+    window.visualViewport?.addEventListener('resize', updateViewportHeight);
+    window.visualViewport?.addEventListener('scroll', updateViewportHeight);
+
+    return () => {
+      window.removeEventListener('resize', updateViewportHeight);
+      window.removeEventListener('orientationchange', updateViewportHeight);
+      window.visualViewport?.removeEventListener('resize', updateViewportHeight);
+      window.visualViewport?.removeEventListener('scroll', updateViewportHeight);
     };
   }, []);
 
@@ -1108,11 +1131,11 @@ const App = () => {
         WebkitUserSelect: 'none',
         // Trava orientação landscape via CSS — a quadra sempre fica horizontal
         width: '100vw',
-        height: '100vh',
+        height: `${viewportHeight}px`,
         overflow: 'hidden',
         // Força layout landscape mesmo se o SO girar
         maxWidth: '100vw',
-        maxHeight: '100vh',
+        maxHeight: `${viewportHeight}px`,
         paddingLeft: SAFE_AREA_LEFT,
         paddingRight: SAFE_AREA_RIGHT,
       }}
@@ -1237,7 +1260,7 @@ const App = () => {
         {isPortrait && (
           <div
             className="absolute left-2 right-2 z-40 pointer-events-none"
-            style={{ bottom: `calc(60px + ${SAFE_AREA_BOTTOM} + 8px)` }}
+            style={{ bottom: `calc(60px + ${SAFE_AREA_BOTTOM_WITH_MIN} + 8px)` }}
           >
             <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2">
               <button
