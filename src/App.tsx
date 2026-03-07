@@ -223,6 +223,7 @@ const App = () => {
 
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
   const [viewportHeight, setViewportHeight] = useState(() => window.innerHeight);
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const [assets, setAssets] = useState<Assets>({ lines: null, logo: null });
   const [dbPlayers, setDbPlayers] = useState<Player[]>([]);
   const [showMenu, setShowMenu] = useState(false);
@@ -343,7 +344,9 @@ const App = () => {
   useEffect(() => {
     const updateViewportHeight = () => {
       const visibleHeight = window.visualViewport?.height ?? window.innerHeight;
+      const visibleWidth = window.visualViewport?.width ?? window.innerWidth;
       setViewportHeight(Math.round(visibleHeight));
+      setViewportWidth(Math.round(visibleWidth));
     };
 
     updateViewportHeight();
@@ -1130,11 +1133,11 @@ const App = () => {
         userSelect: 'none',
         WebkitUserSelect: 'none',
         // Trava orientação landscape via CSS — a quadra sempre fica horizontal
-        width: '100vw',
+        width: `${viewportWidth}px`,
         height: `${viewportHeight}px`,
         overflow: 'hidden',
         // Força layout landscape mesmo se o SO girar
-        maxWidth: '100vw',
+        maxWidth: `${viewportWidth}px`,
         maxHeight: `${viewportHeight}px`,
         paddingLeft: SAFE_AREA_LEFT,
         paddingRight: SAFE_AREA_RIGHT,
@@ -1221,9 +1224,9 @@ const App = () => {
               <Layer>
                 {/* Quadra sempre landscape — a rotação da UI é feita via CSS no index.html */}
                 <Rect
-                  x={courtX} y={courtY} width={imgWidth} height={imgHeight}
+                  x={0} y={0} width={stageW} height={stageH}
                   fillLinearGradientStartPoint={{ x: 0, y: 0 }}
-                  fillLinearGradientEndPoint={{ x: imgWidth, y: imgHeight }}
+                  fillLinearGradientEndPoint={{ x: stageW, y: stageH }}
                   fillLinearGradientColorStops={[0, '#2574d1', 1, '#1c64b6']}
                   cornerRadius={5}
                 />
@@ -1484,7 +1487,7 @@ const App = () => {
                 ? <p className="text-center py-8 text-gray-500">Nenhuma jogada salva.</p>
                 : (
                   <div className="space-y-2">
-                    {savedPlays.map(play => (
+                    {savedPlays.map((play, playIndex) => (
                       <div
                         key={play.id}
                         onClick={() => loadPlay(play)}
@@ -1509,7 +1512,9 @@ const App = () => {
 
                           {openPlayMenuId === play.id && (
                             <div
-                              className="absolute right-0 top-11 w-44 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl z-50 overflow-hidden"
+                              className={`absolute right-0 w-44 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl z-50 overflow-hidden ${
+                                playIndex >= savedPlays.length - 2 ? 'bottom-11' : 'top-11'
+                              }`}
                               onClick={e => e.stopPropagation()}
                             >
                               <button
