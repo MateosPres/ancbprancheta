@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Stage, Layer, Image as KonvaImage, Group, Circle, Text, Rect, Line } from 'react-konva';
-import { UserPlus, X, Trash2, Undo, Eraser, Save, FolderOpen, Plus } from 'lucide-react';
+import { UserPlus, X, Trash2, Undo, Eraser, Save, FolderOpen, Plus, Play, Pause } from 'lucide-react';
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from './services/firebase';
 
@@ -211,6 +211,13 @@ const App = () => {
     lines: []
   }]);
   const [currentFrameIndex, setCurrentFrameIndex] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [displayTokens, setDisplayTokens] = useState<Token[]>(buildDefaultTokens());
+  const [isTokenAnimating, setIsTokenAnimating] = useState(false);
+  const displayTokensRef = useRef<Token[]>(buildDefaultTokens());
+  const tokenAnimationFrameRef = useRef<number | null>(null);
+  const FRAME_DELAY_MS = 1300;
+  const TOKEN_ANIM_MS = 900;
 
   const currentFrame = frames[currentFrameIndex];
   const tokens = currentFrame.tokens;
@@ -219,6 +226,10 @@ const App = () => {
 
   // Layout adapts to orientation — toolbar goes bottom in portrait, right in landscape
   const isPortrait = dimensions.height > dimensions.width;
+
+  useEffect(() => {
+    displayTokensRef.current = displayTokens;
+  }, [displayTokens]);
 
   const [lineColor, setLineColor] = useState('#ff0000');
   const [isDrawing, setIsDrawing] = useState(false);
@@ -310,12 +321,109 @@ const App = () => {
     imgLines.onload = () => setAssets(prev => ({ ...prev, lines: imgLines }));
   };
 
+  const cancelTokenAnimation = useCallback(() => {
+    if (tokenAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(tokenAnimationFrameRef.current);
+      tokenAnimationFrameRef.current = null;
+    }
+  }, []);
+
+  const animateTokensToFrame = useCallback((targetFrameIndex: number) => {
+    if (targetFrameIndex < 0 || targetFrameIndex >= frames.length) return;
+    if (targetFrameIndex === currentFrameIndex) return;
+
+    cancelTokenAnimation();
+
+    const fromTokens = displayTokensRef.current;
+    const toTokens = frames[targetFrameIndex].tokens;
+    const fromById = new Map(fromTokens.map(token => [token.id, token]));
+
+    setCurrentFrameIndex(targetFrameIndex);
+    setSelectedTokenId(null);
+    setIsTokenAnimating(true);
+
+    const start = performance.now();
+    const easeInOut = (t: number) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+
+    const step = (now: number) => {
+      const progress = Math.min(1, (now - start) / TOKEN_ANIM_MS);
+      const eased = easeInOut(progress);
+
+      const animated = toTokens.map(token => {
+        const from = fromById.get(token.id) || token;
+        return {
+          ...token,
+          xRatio: from.xRatio + (token.xRatio - from.xRatio) * eased,
+          yRatio: from.yRatio + (token.yRatio - from.yRatio) * eased,
+        };
+      });
+
+      setDisplayTokens(animated);
+
+      if (progress < 1) {
+        tokenAnimationFrameRef.current = window.requestAnimationFrame(step);
+        return;
+      }
+
+      tokenAnimationFrameRef.current = null;
+      setDisplayTokens(toTokens);
+      setIsTokenAnimating(false);
+    };
+
+    tokenAnimationFrameRef.current = window.requestAnimationFrame(step);
+  }, [cancelTokenAnimation, currentFrameIndex, frames, TOKEN_ANIM_MS]);
+
+  const pausePlayback = useCallback(() => {
+    setIsPlaying(false);
+  }, []);
+
+  const playPlayback = useCallback(() => {
+    if (frames.length <= 1) return;
+
+    if (currentFrameIndex >= frames.length - 1) {
+      animateTokensToFrame(0);
+    }
+
+    setIsPlaying(true);
+  }, [animateTokensToFrame, currentFrameIndex, frames.length]);
+
+  const togglePlayback = useCallback(() => {
+    if (isPlaying) {
+      pausePlayback();
+      return;
+    }
+    playPlayback();
+  }, [isPlaying, pausePlayback, playPlayback]);
+
   const changeFrame = (index: number) => {
     if (index >= 0 && index < frames.length) {
-      setCurrentFrameIndex(index);
-      setSelectedTokenId(null);
+      animateTokensToFrame(index);
     }
   };
+
+  useEffect(() => {
+    if (isTokenAnimating) return;
+    setDisplayTokens(tokens);
+  }, [tokens, isTokenAnimating]);
+
+  useEffect(() => {
+    if (!isPlaying) return;
+
+    if (currentFrameIndex >= frames.length - 1) {
+      setIsPlaying(false);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      animateTokensToFrame(currentFrameIndex + 1);
+    }, FRAME_DELAY_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [isPlaying, currentFrameIndex, frames.length, animateTokensToFrame, FRAME_DELAY_MS]);
+
+  useEffect(() => {
+    return () => cancelTokenAnimation();
+  }, [cancelTokenAnimation]);
 
   // Ao mudar de frame, o courtType muda → useEffect recarrega asset automaticamente
 
@@ -328,12 +436,14 @@ const App = () => {
       setCurrentFrameIndex(next.length - 1);
       return next;
     });
+    setIsPlaying(false);
     setSelectedTokenId(null);
   };
 
   const deleteFrame = () => {
     if (frames.length <= 1) return;
     if (!confirm("Deseja apagar este frame?")) return;
+    setIsPlaying(false);
     setFrames(prev => {
       const next = prev.filter((_, i) => i !== currentFrameIndex);
       const ni = Math.min(currentFrameIndex, next.length - 1);
@@ -513,6 +623,7 @@ const App = () => {
   const loadPlay = (play: SavedPlay) => {
     setFrames(play.frames);
     setCurrentFrameIndex(0);
+    setIsPlaying(false);
     setShowLoadModal(false);
   };
 
@@ -540,6 +651,7 @@ const App = () => {
     const blank: Frame[] = [{ courtType: 'half', tokens: buildDefaultTokens(), lines: [] }];
     setFrames(blank);
     setCurrentFrameIndex(0);
+    setIsPlaying(false);
     setSelectedTokenId(null);
   };
 
@@ -710,7 +822,7 @@ const App = () => {
                   <Line key={i} points={line.points} stroke={line.color} strokeWidth={4}
                     tension={0.5} lineCap="round" lineJoin="round" opacity={0.9} listening={false} />
                 ))}
-                {tokens.map(token => (
+                {displayTokens.map(token => (
                   <PlayerToken
                     key={token.id} token={token}
                     canvasW={stageW} canvasH={stageH}
@@ -776,6 +888,14 @@ const App = () => {
           </div>
 
           <div className={isPortrait ? 'w-px h-8 bg-gray-700 mx-1 shrink-0' : 'h-px w-10 bg-gray-700 shrink-0'} />
+
+          <button
+            onClick={togglePlayback}
+            className={`p-2.5 rounded-xl text-white shadow-md transition-colors shrink-0 ${isPlaying ? 'bg-amber-600 hover:bg-amber-500' : 'bg-emerald-600 hover:bg-emerald-500'}`}
+            title={isPlaying ? 'Pausar reprodução' : 'Reproduzir jogada'}
+          >
+            {isPlaying ? <Pause size={20} /> : <Play size={20} />}
+          </button>
 
           {/* Timeline — scroll horizontal em portrait, vertical em landscape */}
           <div
