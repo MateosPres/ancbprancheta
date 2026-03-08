@@ -324,31 +324,46 @@ const App = () => {
   // Responsividade — sempre baseado no tamanho real do container
   useEffect(() => {
     const updateSize = () => {
-      if (stageContainerRef.current) {
-        const w = stageContainerRef.current.offsetWidth;
-        const h = stageContainerRef.current.offsetHeight;
-        setDimensions({ width: w, height: h });
-        return;
-      }
+      const target = stageContainerRef.current ?? containerRef.current;
+      if (!target) return;
 
-      // Fallback for very early renders before refs are fully mounted.
-      if (containerRef.current) {
-        const w = containerRef.current.offsetWidth;
-        const h = containerRef.current.offsetHeight;
-        setDimensions({ width: w, height: h });
-      }
+      const rect = target.getBoundingClientRect();
+      const nextWidth = Math.round(rect.width);
+      const nextHeight = Math.round(rect.height);
+
+      setDimensions(prev => {
+        if (prev.width === nextWidth && prev.height === nextHeight) return prev;
+        return { width: nextWidth, height: nextHeight };
+      });
     };
 
     const handleOrientationChange = () => setTimeout(updateSize, 200);
 
+    let raf1 = 0;
+    let raf2 = 0;
+    const resizeObserver = new ResizeObserver(() => updateSize());
+
     updateSize();
+    // Duas leituras em frames seguintes para evitar tamanho inicial incompleto no mobile.
+    raf1 = window.requestAnimationFrame(() => {
+      updateSize();
+      raf2 = window.requestAnimationFrame(updateSize);
+    });
+
+    if (stageContainerRef.current) {
+      resizeObserver.observe(stageContainerRef.current);
+    }
+
     window.addEventListener('resize', updateSize);
     window.addEventListener('orientationchange', handleOrientationChange);
     return () => {
+      if (raf1) window.cancelAnimationFrame(raf1);
+      if (raf2) window.cancelAnimationFrame(raf2);
+      resizeObserver.disconnect();
       window.removeEventListener('resize', updateSize);
       window.removeEventListener('orientationchange', handleOrientationChange);
     };
-  }, []);
+  }, [viewportWidth, viewportHeight]);
 
   // Usa a altura real visivel para evitar corte do HUD no iPhone (toolbar dinamica do Safari).
   useEffect(() => {
@@ -600,12 +615,7 @@ const App = () => {
     return null;
   };
 
-  // In portrait the stage is rotated 90°, so we translate pointer coords
-  // Converte coordenadas do evento nativo para o espaço interno do Stage.
-  // Em portrait, o canvas está rotacionado 90° via CSS (rotate(90deg) translateY(-100%)).
-  // O Konva usa getBoundingClientRect() que já considera a rotação, então getPointerPosition()
-  // retorna coords no espaço do canvas visual (rotacionado), não no espaço lógico interno.
-  // Precisamos converter manualmente a partir do evento nativo.
+  // Converte coordenadas para o espaço lógico do Stage quando ele está rotacionado no portrait.
   const getStagePos = (e: any): {x: number, y: number} | null => {
     const stage = e.target.getStage?.() ?? e.target;
     if (!stage) return null;
@@ -614,24 +624,19 @@ const App = () => {
       return stage.getPointerPosition();
     }
 
-    // Em portrait: pegar coordenada do toque/mouse relativa à página
     const nativeEvent = e.evt as TouchEvent & MouseEvent;
     const clientX = nativeEvent.touches?.[0]?.clientX ?? nativeEvent.clientX;
     const clientY = nativeEvent.touches?.[0]?.clientY ?? nativeEvent.clientY;
-
-    // Usar o elemento real do Stage para obter o retângulo visual pós-rotação.
     const stageEl = stage.container?.();
     if (!stageEl) return null;
     const rect = stageEl.getBoundingClientRect();
 
-    // Posição relativa ao container (que é o espaço visual do canvas rotacionado)
     const screenX = clientX - rect.left;
     const screenY = clientY - rect.top;
 
-    // Inverter rotação 90° clockwise aplicada no wrapper centralizado.
-    // Com rect.width = stageH e rect.height = stageW, a inversa fica:
-    // logicalX = rect.height - visualY; logicalY = visualX.
-    return { x: rect.height - screenY, y: screenX };
+    // Para rotate(90deg) translateY(-100%):
+    // logicalX = visualY, logicalY = rect.width - visualX
+    return { x: screenY, y: rect.width - screenX };
   };
 
   const handlePointerDown = (e: any) => {
@@ -1116,14 +1121,12 @@ const App = () => {
 
   // ============================================================================
   // CÁLCULO DA QUADRA
-  // O Stage é sempre renderizado como se fosse landscape.
-  // Em portrait, passamos as dimensões invertidas (height como width e vice-versa)
-  // para o Stage, e giramos o elemento via CSS transform.
+  // Em portrait, o Stage é renderizado em landscape (dimensões invertidas)
+  // e girado via CSS para preencher toda a área útil sem folgas.
   // ============================================================================
 
-  // Dimensões "lógicas" do Stage — sempre landscape (larga e curta)
   const stageW = isPortrait ? dimensions.height : dimensions.width;
-  const stageH = isPortrait ? dimensions.width  : dimensions.height;
+  const stageH = isPortrait ? dimensions.width : dimensions.height;
 
   let imgWidth = 0, imgHeight = 0, courtX = 0, courtY = 0;
   let logoConfig = { w: 0, h: 0, x: 0, y: 0 };
@@ -1244,78 +1247,61 @@ const App = () => {
       >
 
         {/* CANVAS DA QUADRA */}
-        <div
-          className="flex-1 relative overflow-hidden"
-          ref={stageContainerRef}
-          style={{ touchAction: 'none' }}
-        >
+        <div className="flex-1 relative overflow-hidden" ref={stageContainerRef} style={{ touchAction: 'none' }}>
           {dimensions.width > 0 && (
-            <div
+            <Stage
+              width={stageW} height={stageH}
+              onMouseDown={handlePointerDown} onMousemove={handlePointerMove} onMouseup={handlePointerUp}
+              onTouchStart={handlePointerDown} onTouchMove={handlePointerMove} onTouchEnd={handlePointerUp}
               style={{
-                ...(isPortrait
-                  ? {
-                      position: 'absolute',
-                      top: '50%',
-                      left: '50%',
-                      width: stageW,
-                      height: stageH,
-                      transform: 'translate(-50%, -50%) rotate(90deg)',
-                      transformOrigin: 'center center',
-                    }
-                  : {
-                      width: '100%',
-                      height: '100%',
-                    }),
+                cursor: 'crosshair',
+                touchAction: 'none',
+                display: 'block',
+                ...(isPortrait ? {
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  transformOrigin: 'top left',
+                  transform: 'rotate(90deg) translateY(-100%)',
+                } : {}),
               }}
+              onClick={e => { if (e.target === e.target.getStage()) setSelectedTokenId(null); }}
             >
-              <Stage
-                width={stageW} height={stageH}
-                onMouseDown={handlePointerDown} onMousemove={handlePointerMove} onMouseup={handlePointerUp}
-                onTouchStart={handlePointerDown} onTouchMove={handlePointerMove} onTouchEnd={handlePointerUp}
-                style={{
-                  cursor: 'crosshair',
-                  touchAction: 'none',
-                  display: 'block',
-                }}
-                onClick={e => { if (e.target === e.target.getStage()) setSelectedTokenId(null); }}
-              >
-                <Layer>
-                  {/* Quadra sempre landscape — em portrait, o wrapper faz a rotação */}
-                  <Rect
-                    x={0} y={0} width={stageW} height={stageH}
-                    fillLinearGradientStartPoint={{ x: 0, y: 0 }}
-                    fillLinearGradientEndPoint={{ x: stageW, y: stageH }}
-                    fillLinearGradientColorStops={[0, '#2574d1', 1, '#1c64b6']}
-                    cornerRadius={5}
+              <Layer>
+                <Rect
+                  x={0} y={0} width={stageW} height={stageH}
+                  fillLinearGradientStartPoint={{ x: 0, y: 0 }}
+                  fillLinearGradientEndPoint={{ x: stageW, y: stageH }}
+                  fillLinearGradientColorStops={[0, '#2574d1', 1, '#1c64b6']}
+                  cornerRadius={5}
+                />
+                {assets.logo && (
+                  <KonvaImage
+                    image={assets.logo} width={logoConfig.w} height={logoConfig.h}
+                    x={logoConfig.x} y={logoConfig.y} opacity={0.3} listening={false}
                   />
-                  {assets.logo && (
-                    <KonvaImage
-                      image={assets.logo} width={logoConfig.w} height={logoConfig.h}
-                      x={logoConfig.x} y={logoConfig.y} opacity={0.3} listening={false}
-                    />
-                  )}
-                  {assets.lines && (
-                    <KonvaImage
-                      image={assets.lines} width={linesWidth} height={linesHeight}
-                      x={linesX} y={linesY} listening={false}
-                    />
-                  )}
-                  {renderLines.map((line, i) => (
-                    <Line key={i} points={line.points} stroke={line.color} strokeWidth={4}
-                      tension={0.5} lineCap="round" lineJoin="round" opacity={0.9} listening={false} />
-                  ))}
-                  {displayTokens.map(token => (
-                    <PlayerToken
-                      key={token.id} token={token}
-                      canvasW={stageW} canvasH={stageH}
-                      isPortrait={isPortrait}
-                      onDragEnd={handleDragEnd} onSelect={setSelectedTokenId}
-                      isSelected={selectedTokenId === token.id}
-                    />
-                  ))}
-                </Layer>
-              </Stage>
-            </div>
+                )}
+                {assets.lines && (
+                  <KonvaImage
+                    image={assets.lines} width={linesWidth} height={linesHeight}
+                    x={linesX} y={linesY} listening={false}
+                  />
+                )}
+                {renderLines.map((line, i) => (
+                  <Line key={i} points={line.points} stroke={line.color} strokeWidth={4}
+                    tension={0.5} lineCap="round" lineJoin="round" opacity={0.9} listening={false} />
+                ))}
+                {displayTokens.map(token => (
+                  <PlayerToken
+                    key={token.id} token={token}
+                    canvasW={stageW} canvasH={stageH}
+                    isPortrait={isPortrait}
+                    onDragEnd={handleDragEnd} onSelect={setSelectedTokenId}
+                    isSelected={selectedTokenId === token.id}
+                  />
+                ))}
+              </Layer>
+            </Stage>
           )}
         </div>
 
