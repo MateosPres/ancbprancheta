@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { Stage, Layer, Image as KonvaImage, Group, Circle, Text, Rect, Line } from 'react-konva';
 import { UserPlus, X, Trash2, Undo, Eraser, Save, FolderOpen, Plus, Play, Pause, Share2, MoreVertical } from 'lucide-react';
 import GIF from 'gif.js';
@@ -55,6 +56,11 @@ interface GifExportState {
   isGenerating: boolean;
   progress: number;
   playId: string | null;
+}
+
+interface PlayMenuPosition {
+  top: number;
+  left: number;
 }
 
 const ASSETS_URLS = {
@@ -268,6 +274,7 @@ const App = () => {
   const [playName, setPlayName] = useState('');
   const [savedPlays, setSavedPlays] = useState<SavedPlay[]>([]);
   const [openPlayMenuId, setOpenPlayMenuId] = useState<string | null>(null);
+  const [openPlayMenuPos, setOpenPlayMenuPos] = useState<PlayMenuPosition | null>(null);
   const [gifExport, setGifExport] = useState<GifExportState>({
     isGenerating: false,
     progress: 0,
@@ -275,7 +282,10 @@ const App = () => {
   });
 
   useEffect(() => {
-    if (!showLoadModal) setOpenPlayMenuId(null);
+    if (!showLoadModal) {
+      setOpenPlayMenuId(null);
+      setOpenPlayMenuPos(null);
+    }
   }, [showLoadModal]);
 
   // Buscar jogadores e jogadas salvas
@@ -618,9 +628,10 @@ const App = () => {
     const screenX = clientX - rect.left;
     const screenY = clientY - rect.top;
 
-    // Inverter rotação 90° clockwise: logical_x = visual_y, logical_y = rect.width - visual_x
-    // rect.width no modo portrait corresponde à altura lógica do Stage.
-    return { x: screenY, y: rect.width - screenX };
+    // Inverter rotação 90° clockwise aplicada no wrapper centralizado.
+    // Com rect.width = stageH e rect.height = stageW, a inversa fica:
+    // logicalX = rect.height - visualY; logicalY = visualX.
+    return { x: rect.height - screenY, y: screenX };
   };
 
   const handlePointerDown = (e: any) => {
@@ -743,7 +754,40 @@ const App = () => {
       setSavedPlays(updated);
       localStorage.setItem('ancb_plays', JSON.stringify(updated));
       setOpenPlayMenuId(null);
+      setOpenPlayMenuPos(null);
     }
+  };
+
+  const closePlayMenu = () => {
+    setOpenPlayMenuId(null);
+    setOpenPlayMenuPos(null);
+  };
+
+  const openPlayActionsMenu = (playId: string, button: HTMLButtonElement) => {
+    const isSameOpen = openPlayMenuId === playId;
+    if (isSameOpen) {
+      closePlayMenu();
+      return;
+    }
+
+    const rect = button.getBoundingClientRect();
+    const MENU_WIDTH = 176; // Tailwind w-44
+    const MENU_HEIGHT = 96;
+    const GAP = 8;
+    const PAD = 8;
+
+    const left = Math.max(
+      PAD,
+      Math.min(rect.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - PAD)
+    );
+
+    let top = rect.bottom + GAP;
+    if (top + MENU_HEIGHT > window.innerHeight - PAD) {
+      top = Math.max(PAD, rect.top - MENU_HEIGHT - GAP);
+    }
+
+    setOpenPlayMenuId(playId);
+    setOpenPlayMenuPos({ top, left });
   };
 
   const generateAndShareGif = useCallback(async (play: SavedPlay) => {
@@ -1123,6 +1167,10 @@ const App = () => {
     }, [])
   }));
 
+  const activePlayMenuItem = openPlayMenuId
+    ? (savedPlays.find(play => play.id === openPlayMenuId) ?? null)
+    : null;
+
   // ============================================================================
   // RENDER
   // ============================================================================
@@ -1202,61 +1250,72 @@ const App = () => {
           style={{ touchAction: 'none' }}
         >
           {dimensions.width > 0 && (
-            <Stage
-              width={stageW} height={stageH}
-              onMouseDown={handlePointerDown} onMousemove={handlePointerMove} onMouseup={handlePointerUp}
-              onTouchStart={handlePointerDown} onTouchMove={handlePointerMove} onTouchEnd={handlePointerUp}
+            <div
               style={{
-                cursor: 'crosshair',
-                touchAction: 'none',
-                display: 'block',
-                // Em portrait: gira o canvas 90° e reposiciona para ocupar o espaço certo
-                ...(isPortrait ? {
-                  transformOrigin: 'top left',
-                  transform: `rotate(90deg) translateY(-100%)`,
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                } : {})
+                ...(isPortrait
+                  ? {
+                      position: 'absolute',
+                      top: '50%',
+                      left: '50%',
+                      width: stageW,
+                      height: stageH,
+                      transform: 'translate(-50%, -50%) rotate(90deg)',
+                      transformOrigin: 'center center',
+                    }
+                  : {
+                      width: '100%',
+                      height: '100%',
+                    }),
               }}
-              onClick={e => { if (e.target === e.target.getStage()) setSelectedTokenId(null); }}
             >
-              <Layer>
-                {/* Quadra sempre landscape — a rotação da UI é feita via CSS no index.html */}
-                <Rect
-                  x={0} y={0} width={stageW} height={stageH}
-                  fillLinearGradientStartPoint={{ x: 0, y: 0 }}
-                  fillLinearGradientEndPoint={{ x: stageW, y: stageH }}
-                  fillLinearGradientColorStops={[0, '#2574d1', 1, '#1c64b6']}
-                  cornerRadius={5}
-                />
-                {assets.logo && (
-                  <KonvaImage
-                    image={assets.logo} width={logoConfig.w} height={logoConfig.h}
-                    x={logoConfig.x} y={logoConfig.y} opacity={0.3} listening={false}
+              <Stage
+                width={stageW} height={stageH}
+                onMouseDown={handlePointerDown} onMousemove={handlePointerMove} onMouseup={handlePointerUp}
+                onTouchStart={handlePointerDown} onTouchMove={handlePointerMove} onTouchEnd={handlePointerUp}
+                style={{
+                  cursor: 'crosshair',
+                  touchAction: 'none',
+                  display: 'block',
+                }}
+                onClick={e => { if (e.target === e.target.getStage()) setSelectedTokenId(null); }}
+              >
+                <Layer>
+                  {/* Quadra sempre landscape — em portrait, o wrapper faz a rotação */}
+                  <Rect
+                    x={0} y={0} width={stageW} height={stageH}
+                    fillLinearGradientStartPoint={{ x: 0, y: 0 }}
+                    fillLinearGradientEndPoint={{ x: stageW, y: stageH }}
+                    fillLinearGradientColorStops={[0, '#2574d1', 1, '#1c64b6']}
+                    cornerRadius={5}
                   />
-                )}
-                {assets.lines && (
-                  <KonvaImage
-                    image={assets.lines} width={linesWidth} height={linesHeight}
-                    x={linesX} y={linesY} listening={false}
-                  />
-                )}
-                {renderLines.map((line, i) => (
-                  <Line key={i} points={line.points} stroke={line.color} strokeWidth={4}
-                    tension={0.5} lineCap="round" lineJoin="round" opacity={0.9} listening={false} />
-                ))}
-                {displayTokens.map(token => (
-                  <PlayerToken
-                    key={token.id} token={token}
-                    canvasW={stageW} canvasH={stageH}
-                    isPortrait={isPortrait}
-                    onDragEnd={handleDragEnd} onSelect={setSelectedTokenId}
-                    isSelected={selectedTokenId === token.id}
-                  />
-                ))}
-              </Layer>
-            </Stage>
+                  {assets.logo && (
+                    <KonvaImage
+                      image={assets.logo} width={logoConfig.w} height={logoConfig.h}
+                      x={logoConfig.x} y={logoConfig.y} opacity={0.3} listening={false}
+                    />
+                  )}
+                  {assets.lines && (
+                    <KonvaImage
+                      image={assets.lines} width={linesWidth} height={linesHeight}
+                      x={linesX} y={linesY} listening={false}
+                    />
+                  )}
+                  {renderLines.map((line, i) => (
+                    <Line key={i} points={line.points} stroke={line.color} strokeWidth={4}
+                      tension={0.5} lineCap="round" lineJoin="round" opacity={0.9} listening={false} />
+                  ))}
+                  {displayTokens.map(token => (
+                    <PlayerToken
+                      key={token.id} token={token}
+                      canvasW={stageW} canvasH={stageH}
+                      isPortrait={isPortrait}
+                      onDragEnd={handleDragEnd} onSelect={setSelectedTokenId}
+                      isSelected={selectedTokenId === token.id}
+                    />
+                  ))}
+                </Layer>
+              </Stage>
+            </div>
           )}
         </div>
 
@@ -1482,12 +1541,13 @@ const App = () => {
               </h3>
               <button onClick={() => setShowLoadModal(false)} className="text-gray-400 hover:text-white"><X size={24} /></button>
             </div>
-            <div className="flex-1 overflow-y-auto p-4" onClick={() => setOpenPlayMenuId(null)}>
+            <div className="relative flex-1 overflow-y-auto p-4" onClick={closePlayMenu} onScroll={closePlayMenu}>
               {savedPlays.length === 0
                 ? <p className="text-center py-8 text-gray-500">Nenhuma jogada salva.</p>
                 : (
                   <div className="space-y-2">
-                    {savedPlays.map((play, playIndex) => (
+                    {savedPlays.map(play => {
+                      return (
                       <div
                         key={play.id}
                         onClick={() => loadPlay(play)}
@@ -1502,53 +1562,56 @@ const App = () => {
                           <button
                             onClick={e => {
                               e.stopPropagation();
-                              setOpenPlayMenuId(prev => (prev === play.id ? null : play.id));
+                              openPlayActionsMenu(play.id, e.currentTarget);
                             }}
                             className="p-2 rounded-lg text-gray-300 hover:text-white hover:bg-gray-600 transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
                             title="Mais opcoes"
                           >
                             <MoreVertical size={18} />
                           </button>
-
-                          {openPlayMenuId === play.id && (
-                            <div
-                              className={`absolute right-0 w-44 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl z-50 overflow-hidden ${
-                                playIndex >= savedPlays.length - 2 ? 'bottom-11' : 'top-11'
-                              }`}
-                              onClick={e => e.stopPropagation()}
-                            >
-                              <button
-                                onClick={async e => {
-                                  e.stopPropagation();
-                                  setOpenPlayMenuId(null);
-                                  await generateAndShareGif(play);
-                                }}
-                                disabled={gifExport.isGenerating}
-                                className={`w-full text-left px-3 py-2.5 text-sm flex items-center gap-2 transition-colors
-                                  ${gifExport.isGenerating
-                                    ? 'text-slate-500 cursor-not-allowed'
-                                    : 'text-white hover:bg-slate-800'
-                                  }
-                                `}
-                              >
-                                <Share2 size={15} /> Compartilhar GIF
-                              </button>
-
-                              <button
-                                onClick={e => deleteSavedPlay(play.id, e)}
-                                className="w-full text-left px-3 py-2.5 text-sm flex items-center gap-2 text-red-400 hover:bg-slate-800 transition-colors"
-                              >
-                                <Trash2 size={15} /> Excluir
-                              </button>
-                            </div>
-                          )}
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )
               }
             </div>
+
+            {openPlayMenuPos && activePlayMenuItem && createPortal(
+              <div
+                className="fixed w-44 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl z-[120] overflow-hidden"
+                style={{ top: openPlayMenuPos.top, left: openPlayMenuPos.left }}
+                onClick={e => e.stopPropagation()}
+              >
+                <button
+                  onClick={async e => {
+                    e.stopPropagation();
+                    closePlayMenu();
+                    await generateAndShareGif(activePlayMenuItem);
+                  }}
+                  disabled={gifExport.isGenerating}
+                  className={`w-full text-left px-3 py-2.5 text-sm flex items-center gap-2 transition-colors ${
+                    gifExport.isGenerating
+                      ? 'text-slate-500 cursor-not-allowed'
+                      : 'text-white hover:bg-slate-800'
+                  }`}
+                >
+                  <Share2 size={15} /> Compartilhar GIF
+                </button>
+
+                <button
+                  onClick={e => {
+                    e.stopPropagation();
+                    deleteSavedPlay(activePlayMenuItem.id, e);
+                  }}
+                  className="w-full text-left px-3 py-2.5 text-sm flex items-center gap-2 text-red-400 hover:bg-slate-800 transition-colors"
+                >
+                  <Trash2 size={15} /> Excluir
+                </button>
+              </div>,
+              document.body
+            )}
           </div>
         </div>
       )}
